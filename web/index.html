@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>cadgang</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    { "imports": { "three": "/vendor/three.module.js" } }
+  </script>
+</head>
+<body>
+  <header>
+    <div class="logo">cad<span>gang</span></div>
+    <div class="toolbar">
+      <label>resolution
+        <input id="resolution" type="range" min="24" max="180" value="90" />
+        <span id="resolutionValue">90</span>
+      </label>
+      <button id="exportStl" title="Download binary STL of the output node">Export STL</button>
+      <span id="status" class="status"></span>
+    </div>
+  </header>
+
+  <main>
+    <aside id="panel">
+      <div class="panel-head">
+        <select id="addNodeType"></select>
+        <button id="addNode">+ Add block</button>
+      </div>
+      <div id="nodeList"></div>
+      <div class="panel-foot">
+        <button id="clearDoc" class="danger">Clear model</button>
+      </div>
+    </aside>
+    <div id="viewport"></div>
+  </main>
+
+  <footer id="stats"></footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
