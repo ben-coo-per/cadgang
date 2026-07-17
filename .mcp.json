@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "cadgang": {
+      "command": "node",
+      "args": ["src/mcp/index.js"],
+      "env": {
+        "CADGANG_URL": "http://localhost:4477"
+      }
+    }
+  }
+}
