@@ -58,7 +58,7 @@ server.registerTool(
     title: 'List cadgang block types',
     description: `List every available cadgang block (node) type with its category, parameters (name, type, default, description) and input slots. Call this first to learn the modeling vocabulary.
 
-Categories: 'primitive' (sphere, box, cylinder, torus, capsule, plane, gyroid, schwarz_p), 'boolean' (union, intersect, subtract, smooth_*), 'modify' (shell, offset, transform).
+Categories: 'primitive' (sphere, box, cylinder, torus, capsule, plane, gyroid, schwarz_p, spiky_sphere, polyhedron, imported_mesh, extrude_face), 'boolean' (union, intersect, subtract, smooth_*), 'modify' (shell, offset, transform, drape, linear_array, polar_array), 'output' (export_stl pass-through sink).
 
 Note: plane/gyroid/schwarz_p are unbounded fields — intersect them with a bounded body. All dimensions are millimeters; the world is Z-up.`,
     inputSchema: {},
@@ -172,6 +172,56 @@ server.registerTool(
   },
   async () => {
     try { return ok(await call('/document/clear', { method: 'POST', body: {} })); } catch (e) { return fail(e); }
+  }
+);
+
+server.registerTool(
+  'cadgang_undo',
+  {
+    title: 'Undo / redo the last model edit',
+    description: `Step the document history: undo reverts the most recent edit (create/update/delete/var/asset/clear/load), redo re-applies an undone one. History holds the last 100 steps; bursts of rapid same-param edits count as one step.`,
+    inputSchema: { redo: z.boolean().default(false).describe('true = redo instead of undo') },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async ({ redo }) => {
+    try { return ok(await call(redo ? '/redo' : '/undo', { method: 'POST', body: {} })); } catch (e) { return fail(e); }
+  }
+);
+
+// ---------------------------------------------------------------- import
+
+server.registerTool(
+  'cadgang_import_step',
+  {
+    title: 'Import a STEP/IGES/BREP file',
+    description: `Import a CAD file from disk into the model: tessellates it, stores the mesh as a document asset, and creates an 'imported_mesh' block referencing it. Returns the new node and asset metadata (including faceCount — the number of selectable B-rep faces).
+
+Follow-ups: use the 'extrude_face' block {asset, face, distance} to extrude one of the imported surfaces, or wire the imported_mesh into booleans/drape/arrays like any other shape.
+
+Args:
+  - path: absolute path to a .step/.stp/.iges/.igs/.brep file
+  - deflection: tessellation quality as a bounding-box ratio (default 0.001; smaller = finer)`,
+    inputSchema: {
+      path: z.string().describe('Absolute path to the CAD file'),
+      deflection: z.number().min(0.00001).max(0.1).default(0.001).describe('Linear deflection (bbox ratio)'),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async ({ path: filePath, deflection }) => {
+    try {
+      const fs = await import('node:fs');
+      const buf = fs.readFileSync(filePath);
+      const name = filePath.split('/').pop();
+      const q = new URLSearchParams({ name, deflection: String(deflection) });
+      const res = await fetch(`${BASE}/api/import/step?${q}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: buf,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `cadgang API error (HTTP ${res.status})`);
+      return ok(data);
+    } catch (e) { return fail(e); }
   }
 );
 

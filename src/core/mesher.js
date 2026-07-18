@@ -7,7 +7,22 @@
  * Produces watertight, manifold-friendly triangle meshes ideal for SDFs.
  */
 
-export function meshSDF(fn, bounds, resolution = 80) {
+// Progress is split across the passes weighted roughly by cost. Grid sampling
+// (O(res^3) SDF evals) dominates; the rest is bookkeeping plus per-vertex
+// normals. Cumulative ceilings per phase, all summing to 1.0:
+const P_SAMPLE = 0.70; // grid field sampling  -> [0.00 .. 0.70]
+const P_CELLS = 0.10;  // cell vertex extraction -> [0.70 .. 0.80]
+const P_QUADS = 0.05;  // quad stitching        -> [0.80 .. 0.85]
+const P_NORMALS = 0.15; // vertex normals        -> [0.85 .. 1.00]
+
+/**
+ * The mesher as a generator: identical arithmetic to the classic surface-nets
+ * pass, but it `yield`s a 0..1 progress fraction at slice/chunk boundaries and
+ * returns the finished mesh. Driven synchronously by meshSDF and asynchronously
+ * (yielding to the event loop between chunks) by meshSDFAsync — so both paths
+ * produce byte-identical output. Progress is monotonically nondecreasing.
+ */
+function* meshGenerator(fn, bounds, resolution = 80) {
   const res = Math.max(8, Math.min(220, Math.round(resolution)));
   const { min, max } = bounds;
   const size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
@@ -21,6 +36,8 @@ export function meshSDF(fn, bounds, resolution = 80) {
   const field = new Float32Array(gx * gy * gz);
   const gidx = (i, j, k) => i + gx * (j + gy * k);
 
+  yield 0; // let listeners show a bar before the heavy sampling begins
+
   for (let k = 0; k < gz; k++) {
     const z = min[2] + k * step[2];
     for (let j = 0; j < gy; j++) {
@@ -30,6 +47,7 @@ export function meshSDF(fn, bounds, resolution = 80) {
         field[base + i] = fn(min[0] + i * step[0], y, z);
       }
     }
+    yield (P_SAMPLE * (k + 1)) / gz;
   }
 
   // cell -> vertex index
@@ -78,6 +96,7 @@ export function meshSDF(fn, bounds, resolution = 80) {
         );
       }
     }
+    yield P_SAMPLE + (P_CELLS * (k + 1)) / nz;
   }
 
   // Stitch quads: for each interior grid edge with a sign change, connect the
@@ -128,6 +147,7 @@ export function meshSDF(fn, bounds, resolution = 80) {
         }
       }
     }
+    yield P_SAMPLE + P_CELLS + (P_QUADS * (k + 1)) / gz;
   }
 
   const pos = new Float32Array(positions);
@@ -136,6 +156,8 @@ export function meshSDF(fn, bounds, resolution = 80) {
   // Vertex normals from SDF gradient (central differences)
   const normals = new Float32Array(pos.length);
   const eps = Math.min(...step) * 0.5;
+  const normalsBase = P_SAMPLE + P_CELLS + P_QUADS;
+  const CHUNK = 3000; // components processed between yields (~1000 vertices)
   for (let v = 0; v < pos.length; v += 3) {
     const x = pos[v], y = pos[v + 1], z = pos[v + 2];
     let gxv = fn(x + eps, y, z) - fn(x - eps, y, z);
@@ -145,6 +167,9 @@ export function meshSDF(fn, bounds, resolution = 80) {
     normals[v] = gxv / len;
     normals[v + 1] = gyv / len;
     normals[v + 2] = gzv / len;
+    if (v % CHUNK === 0 && pos.length > 0) {
+      yield normalsBase + (P_NORMALS * (v + 3)) / pos.length;
+    }
   }
 
   return {
@@ -153,6 +178,32 @@ export function meshSDF(fn, bounds, resolution = 80) {
     indices: idx,
     stats: meshStats(pos, idx, bounds, dims),
   };
+}
+
+/** Synchronous mesher — drives the generator to completion, ignoring progress. */
+export function meshSDF(fn, bounds, resolution = 80) {
+  const gen = meshGenerator(fn, bounds, resolution);
+  let step = gen.next();
+  while (!step.done) step = gen.next();
+  return step.value;
+}
+
+/**
+ * Async mesher: identical output to meshSDF, but yields to the event loop
+ * between chunks (so a server can flush WebSocket messages mid-mesh) and reports
+ * progress via onProgress(fraction), 0..1, monotonically nondecreasing, with a
+ * guaranteed final onProgress(1).
+ */
+export async function meshSDFAsync(fn, bounds, resolution = 80, onProgress = () => {}) {
+  const gen = meshGenerator(fn, bounds, resolution);
+  let step = gen.next();
+  while (!step.done) {
+    onProgress(step.value);
+    await new Promise((resolve) => setImmediate(resolve));
+    step = gen.next();
+  }
+  onProgress(1);
+  return step.value;
 }
 
 export function meshStats(positions, indices, bounds, dims) {

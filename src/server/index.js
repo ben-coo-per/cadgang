@@ -21,18 +21,22 @@ const DOC_PATH = process.env.CADGANG_DOC || path.join(ROOT, 'data', 'document.js
 const doc = new ModelDocument(DOC_PATH);
 const app = express();
 app.use(express.json({ limit: '10mb' }));
-app.use('/api', apiRouter(doc, ROOT));
-app.use(express.static(path.join(ROOT, 'web')));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
-doc.onChange(() => {
-  const msg = JSON.stringify({ type: 'document_changed', revision: doc.revision });
+/** JSON-stringify an object and send it to every open WebSocket client. */
+function broadcast(obj) {
+  const msg = JSON.stringify(obj);
   for (const client of wss.clients) {
     if (client.readyState === 1) client.send(msg);
   }
-});
+}
+
+app.use('/api', apiRouter(doc, ROOT, broadcast));
+app.use(express.static(path.join(ROOT, 'web')));
+
+doc.onChange(() => broadcast({ type: 'document_changed', revision: doc.revision }));
 
 wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'hello', revision: doc.revision }));

@@ -1,0 +1,92 @@
+/* CW&T Design System — tokens (from the CW&T Design System project, colors_and_type.css)
+   Ink + paper, one face (Space Mono), hairline rules, radius 0, shadows ~none. */
+
+@font-face {
+  font-family: "Space Mono";
+  src: url("fonts/SpaceMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Space Mono";
+  src: url("fonts/SpaceMono-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Space Mono";
+  src: url("fonts/SpaceMono-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Space Mono";
+  src: url("fonts/SpaceMono-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+:root {
+  /* Type */
+  --font-mono: "Space Mono", "JetBrains Mono", "Menlo", "Courier New", monospace;
+
+  --fs-12: 11px;
+  --fs-14: 13px;   /* nav, captions, ID labels */
+  --fs-16: 15px;   /* body */
+  --fs-20: 19px;
+  --fs-24: 22px;
+
+  --lh-tight: 1.15;
+  --lh-snug: 1.35;
+  --lh-body: 1.55;
+
+  --ls-label: 0.04em;
+  --ls-tight: -0.01em;
+
+  /* Ink + paper */
+  --ink: #111111;
+  --ink-soft: #4a4a4a;
+  --ink-faint: #8a8a8a;
+  --rule: #e3e3e3;
+  --rule-soft: #efefef;
+  --paper: #ffffff;
+  --paper-2: #f6f5f2;
+  --paper-3: #ececea;
+
+  /* Machined-metal greys (surfaces/swatches only, never text) */
+  --metal-stainless: #b9b8b3;
+  --metal-titanium: #8c8c87;
+  --metal-graphite: #3a3a38;
+  --metal-brass: #b08a4d;
+  --metal-copper: #b56b3f;
+  --metal-cerakote: #1a1a18;
+
+  /* Signal accents (sparingly) */
+  --signal-red: #d11d1d;
+  --signal-orange: #e35a1e;
+  --signal-yellow: #efc94c;
+  --signal-green: #2e7d4f;
+
+  /* Spacing — 4px base */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px;
+  --sp-6: 24px; --sp-8: 32px; --sp-10: 40px; --sp-12: 48px;
+
+  /* Radius — almost always 0 */
+  --radius-0: 0px;
+  --radius-pill: 999px; /* rare: dots, status pills */
+
+  --bw-hair: 1px;
+  --bw-bold: 2px;
+
+  --shadow-0: none;
+  --shadow-photo: 0 24px 48px -16px rgba(0, 0, 0, 0.18);
+
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 360ms;
+}

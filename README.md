@@ -40,6 +40,8 @@ The cadgang web server must be running (`npm start`). Set `CADGANG_URL` if it's 
 | `cadgang_create_node` / `cadgang_update_node` / `cadgang_delete_node` | Edit the graph |
 | `cadgang_set_output` | Choose which block is meshed/exported |
 | `cadgang_clear_document` | Wipe the model (destructive) |
+| `cadgang_undo` | Undo (or redo) the last model edit |
+| `cadgang_import_step` | Import a STEP/IGES/BREP file from disk as an `imported_mesh` block |
 | `cadgang_eval_sdf` | Sample signed distances at points (thickness/clearance checks) |
 | `cadgang_mesh_stats` | Triangle count, volume, surface area, bounds |
 | `cadgang_export_stl` | Write a binary STL to `exports/` |
@@ -49,11 +51,20 @@ Ask Claude Code things like: *"Build a 60×40×24 mm rounded enclosure with a 2 
 
 ## Block types
 
-- **Primitives** — `sphere`, `box` (with rounding), `cylinder`, `torus`, `capsule`, `plane`, `gyroid`, `schwarz_p` (TPMS lattices)
+- **Primitives** — `sphere`, `box` (with rounding), `cylinder`, `torus`, `capsule`, `plane`, `gyroid`, `schwarz_p` (TPMS lattices), `polyhedron`, `spiky_sphere`, `imported_mesh` (STEP/IGES import), `extrude_face` (extrude a selected surface of an import)
 - **Booleans** — `union`, `intersect`, `subtract`, `smooth_union`, `smooth_intersect`, `smooth_subtract` (blended fillets)
-- **Modifiers** — `shell` (hollow to wall thickness), `offset`, `transform` (translate / rotate / scale)
+- **Modifiers** — `shell` (hollow to wall thickness), `offset`, `transform` (translate / rotate / scale), `drape` (vacuum-form a sheet over shapes, with smoothness control), `linear_array`, `polar_array`
+- **Output** — `export_stl` (pass-through sink with a download button; params: filename, resolution)
 
-Units are millimeters, world is Z-up. `plane`/`gyroid`/`schwarz_p` are unbounded fields — intersect them with a solid body (that is how lattice infills are made).
+Units are millimeters, world is Z-up. `plane`/`gyroid`/`schwarz_p` are unbounded fields — intersect them with a bounded body (that is how lattice infills are made).
+
+### STEP import
+
+Upload a `.step`/`.stp` (or IGES/BREP) file — **Import STEP** in the web UI, `POST /api/import/step`, or the `cadgang_import_step` MCP tool. The file is tessellated (WASM OpenCascade via `occt-import-js`), welded, stored as a document **asset**, and exposed as an `imported_mesh` block with an exact BVH signed-distance field. Each B-rep face of the import stays addressable as a triangle range, so surfaces are selectable in the viewport — click one to spawn an `extrude_face` block.
+
+### Drape
+
+`drape` drops a virtual sheet straight down (−Z) over its input shapes, like vacuum forming: it raycasts a top-surface heightfield at compile time, smooths it with a rolling-ball (parabolic) dilation of radius `blend`, and shells the result to `thickness`. `blend` controls how tightly the sheet wraps — 0 hugs every crease, larger values bridge gaps and round shoulders. `floor` sets where the skirt ends, `margin` how far the sheet overhangs.
 
 ## REST API
 
@@ -64,6 +75,9 @@ Units are millimeters, world is Z-up. `plane`/`gyroid`/`schwarz_p` are unbounded
 | `POST /api/nodes` · `PATCH /api/nodes/:id` · `DELETE /api/nodes/:id` | Graph editing |
 | `POST /api/document/output` | Set output block |
 | `POST /api/eval` | Evaluate SDF at points |
+| `POST /api/undo` · `POST /api/redo` | Step the edit history (last 100 steps) |
+| `POST /api/import/step?name=file.step` | Import STEP/IGES/BREP (raw body) → asset + `imported_mesh` node (`&node=id` attaches to an existing block instead) |
+| `GET /api/assets` · `GET /api/assets/:id` · `DELETE /api/assets/:id` | Imported mesh assets (`:id` returns full triangles + per-face ranges) |
 | `GET /api/mesh?resolution=90` | Surface-nets mesh (JSON) |
 | `GET /api/mesh/stats` | Stats only |
 | `GET /api/export/stl?resolution=128&file=name` | Binary STL |

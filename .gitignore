@@ -1,6 +1,7 @@
 node_modules/
 data/
 exports/
+saves/
 *.stl
 *.log
 .DS_Store
