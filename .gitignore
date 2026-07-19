@@ -5,3 +5,4 @@ saves/
 *.stl
 *.log
 .DS_Store
+*.mov

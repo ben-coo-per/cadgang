@@ -4,6 +4,8 @@ Block-based **implicit modeling CAD** that runs in your browser — with a REST 
 
 ![cadgang UI](docs/screenshot-ui.png)
 
+**[▶ Watch a modeling session](docs/demo.mp4)** (2:48, 4 MB) — building a gyroid-latticed spikeball from scratch in the node editor.
+
 cadgang sits in the lineage of functional-representation CAD: [kokopelli](https://github.com/mkeeter/kokopelli), Matt Keeter's Python-scripted f-rep CAD/CAM tool (and its successors [Antimony](https://github.com/mkeeter/antimony) and [libfive](https://libfive.com)), and the implicit-modeling approach [nTopology](https://www.ntop.com/) built a company on. Where kokopelli describes models as code and nTop as a graph of implicit operations, cadgang does both: models are **graphs of blocks** evaluated as signed distance fields (SDFs), and every graph compiles down to a one-line functional formula (shown live in the footer). Because geometry is a function, not a boundary mesh, booleans never fail, shells and offsets are exact, and TPMS lattices are a single block.
 
 | Raymarched preview | Gyroid lattice infill |
