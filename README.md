@@ -1,25 +1,42 @@
 # cadgang
 
-A web-based implicit modeling CAD tool in the spirit of [nTopology](https://www.ntop.com/), with a built-in **MCP server** so Claude Code can drive it end-to-end: build models, inspect geometry, render previews, and export STLs.
+Block-based **implicit modeling CAD** that runs in your browser — with a REST API, live WebSocket updates, and a built-in **MCP server** so Claude Code can drive it end-to-end: build models, inspect geometry, render previews, and export STLs.
 
 ![cadgang UI](docs/screenshot-ui.png)
 
-Models are **graphs of blocks** evaluated as signed distance fields (SDFs) — the same representation nTopology uses. Because geometry is a function, not a mesh, booleans never fail, shells are exact, and lattices are free.
+cadgang sits in the lineage of functional-representation CAD: [kokopelli](https://github.com/mkeeter/kokopelli), Matt Keeter's Python-scripted f-rep CAD/CAM tool (and its successors [Antimony](https://github.com/mkeeter/antimony) and [libfive](https://libfive.com)), and the implicit-modeling approach [nTopology](https://www.ntop.com/) built a company on. Where kokopelli describes models as code and nTop as a graph of implicit operations, cadgang does both: models are **graphs of blocks** evaluated as signed distance fields (SDFs), and every graph compiles down to a one-line functional formula (shown live in the footer). Because geometry is a function, not a boundary mesh, booleans never fail, shells and offsets are exact, and TPMS lattices are a single block.
 
 | Raymarched preview | Gyroid lattice infill |
 |---|---|
 | ![part](docs/preview-part.png) | ![gyroid](docs/preview-gyroid.png) |
 
-## Quickstart
+## Install
+
+Requires [Node.js](https://nodejs.org) ≥ 18 and a modern browser. No build step — the web app is plain ES modules.
 
 ```bash
+git clone https://github.com/cheewee2000/cadgang.git
+cd cadgang
 npm install
 npm start          # → http://localhost:4477
-npm run demo       # builds a gyroid-filled demo part via the API
-npm test           # kernel unit tests
 ```
 
-Open http://localhost:4477 — the viewport live-updates (WebSocket) whenever the model changes, whether from the UI, the REST API, or Claude via MCP.
+Then:
+
+```bash
+npm run demo       # builds a gyroid-filled demo part via the REST API
+npm test           # 80 kernel/API unit tests
+```
+
+Open http://localhost:4477 — the viewport live-updates (WebSocket) whenever the model changes, whether from the UI, the REST API, or Claude via MCP. The model autosaves to `data/document.json`, so state survives restarts and the UI and MCP always share one model. `CADGANG_PORT` and `CADGANG_DOC` select an alternate port/document for scratch instances.
+
+## The editor
+
+- **Double-click** the graph to add a block, **drag** between ports to wire, **drag** blocks to move, right-drag to pan, scroll to zoom, marquee-drag to multi-select, **⌘C/⌘V** copy/paste, **⌘Z** undo, **Arrange** for a tidy dependency layout
+- **VARS bar** — define named variables (`w = 60`); any numeric param accepts an expression (`w/2 + 3`) that re-evaluates when the variable changes
+- **STACK / SIDE** toggles the graph/viewport split between stacked and side-by-side; **DARK** toggles the theme; **COLOR** switches per-part color vs. stainless render
+- **Save / Open** stores named models server-side (`saves/`)
+- Click the footer formula to see the whole model as a nested functional expression
 
 ## Claude Code integration (MCP)
 
@@ -74,14 +91,16 @@ Upload a `.step`/`.stp` (or IGES/BREP) file — **Import STEP** in the web UI, `
 | `GET /api/document` | Model graph + revision |
 | `POST /api/nodes` · `PATCH /api/nodes/:id` · `DELETE /api/nodes/:id` | Graph editing |
 | `POST /api/document/output` | Set output block |
+| `POST /api/vars` · `DELETE /api/vars/:name` | User variables (usable in param expressions) |
 | `POST /api/eval` | Evaluate SDF at points |
 | `POST /api/undo` · `POST /api/redo` | Step the edit history (last 100 steps) |
+| `GET /api/files` · `POST /api/files/save` · `POST /api/files/load` · `DELETE /api/files/:name` | Named model save/open |
 | `POST /api/import/step?name=file.step` | Import STEP/IGES/BREP (raw body) → asset + `imported_mesh` node (`&node=id` attaches to an existing block instead) |
 | `GET /api/assets` · `GET /api/assets/:id` · `DELETE /api/assets/:id` | Imported mesh assets (`:id` returns full triangles + per-face ranges) |
 | `GET /api/mesh?resolution=90` | Surface-nets mesh (JSON) |
 | `GET /api/mesh/stats` | Stats only |
 | `GET /api/export/stl?resolution=128&file=name` | Binary STL |
-| `GET /api/preview.png?yaw=-35&pitch=25` | Raymarched preview |
+| `GET /api/preview.png?yaw=-35&pitch=25&node=id` | Raymarched preview (any block, not just the output) |
 
 `ws://…/ws` broadcasts `{type: "document_changed", revision}` on every edit.
 
@@ -90,24 +109,22 @@ Upload a `.step`/`.stp` (or IGES/BREP) file — **Import STEP** in the web UI, `
 ```
 src/core/     geometry kernel — pure JS, no server dependency
   sdf.js        block registry, graph → SDF closure compiler, bbox propagation
+  expr.js       safe expression evaluator for variable-driven params
   mesher.js     naive surface-nets mesher (watertight, SDF-gradient normals)
+  mesh.js       mesh utilities: welding, BVH signed distance, per-face ranges
+  step.js       STEP/IGES/BREP tessellation (WASM OpenCascade)
   stl.js        binary STL writer
   render.js     CPU sphere-tracer + dependency-free PNG encoder
-  document.js   persistent model document (autosaved to data/document.json)
+  document.js   persistent model document, undo history, autosave
 src/server/   Express REST API + WebSocket + static hosting
 src/mcp/      cadgang-mcp-server (stdio, @modelcontextprotocol/sdk)
-web/          Three.js viewport + block/param editor (no build step)
+web/          Three.js viewport + node-graph editor (no build step, no framework)
 ```
 
-The model document is autosaved to `data/document.json`, so the UI and MCP always share one model and state survives restarts.
+## Prior art & credits
 
-## Pushing this repo to GitHub
+- [kokopelli](https://github.com/mkeeter/kokopelli) → [Antimony](https://github.com/mkeeter/antimony) → [libfive](https://libfive.com) — Matt Keeter's f-rep CAD tools, the reason this way of thinking about geometry exists in open source
+- [nTopology](https://www.ntop.com/) — implicit modeling at industrial scale; the gyroid-infill demo is their party trick
+- [three.js](https://threejs.org) (MIT, vendored in `web/vendor/`) · [occt-import-js](https://github.com/kovacsv/occt-import-js) (OpenCascade WASM) · [Space Mono](https://fonts.google.com/specimen/Space+Mono) (SIL OFL 1.1, license in `web/fonts/OFL.txt`)
 
-The repo is local. To publish it as a private GitHub repo:
-
-```bash
-gh repo create cadgang --private --source . --push
-# or manually:
-git remote add origin git@github.com:<you>/cadgang.git
-git push -u origin main
-```
+Built by [CW&T](https://cwandt.com) with Claude Code.
