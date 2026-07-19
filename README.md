@@ -1,18 +1,12 @@
-
-
-https://github.com/user-attachments/assets/6960d62b-7610-4623-9ec3-8bda3a237a73
-
-
-
-
-
 # cadgang
 
 Block-based **implicit modeling CAD** that runs in your browser — with a REST API, live WebSocket updates, and a built-in **MCP server** so Claude Code can drive it end-to-end: build models, inspect geometry, render previews, and export STLs.
 
 ![cadgang UI](docs/screenshot-ui.png)
 
-**[▶ Watch a modeling session](docs/demo.mp4)** (2:48, 4 MB) — building a gyroid-latticed spikeball from scratch in the node editor.
+A modeling session — building a gyroid-latticed spikeball from scratch in the node editor ([mp4 in the repo](docs/demo.mp4)):
+
+https://github.com/user-attachments/assets/6960d62b-7610-4623-9ec3-8bda3a237a73
 
 cadgang sits in the lineage of functional-representation CAD: [kokopelli](https://github.com/mkeeter/kokopelli), Matt Keeter's Python-scripted f-rep CAD/CAM tool (and its successors [Antimony](https://github.com/mkeeter/antimony) and [libfive](https://libfive.com)), and the implicit-modeling approach [nTopology](https://www.ntop.com/) built a company on. Where kokopelli describes models as code and nTop as a graph of implicit operations, cadgang does both: models are **graphs of blocks** evaluated as signed distance fields (SDFs), and every graph compiles down to a one-line functional formula (shown live in the footer). Because geometry is a function, not a boundary mesh, booleans never fail, shells and offsets are exact, and TPMS lattices are a single block.
 
