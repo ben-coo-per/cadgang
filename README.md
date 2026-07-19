@@ -1,5 +1,11 @@
 
 
+https://github.com/user-attachments/assets/6960d62b-7610-4623-9ec3-8bda3a237a73
+
+
+
+
+
 # cadgang
 
 Block-based **implicit modeling CAD** that runs in your browser — with a REST API, live WebSocket updates, and a built-in **MCP server** so Claude Code can drive it end-to-end: build models, inspect geometry, render previews, and export STLs.
