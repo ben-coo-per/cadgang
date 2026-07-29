@@ -1,4 +1,4 @@
-// CDP probe: does the graph pane receive a dblclick, and does the create menu open?
+// End-to-end probe: double-click empty canvas, pick a block, confirm it renders.
 import { WebSocket } from 'ws';
 
 const TARGET = process.argv[2];
@@ -22,10 +22,12 @@ const page = await listTargets();
 const ws = new WebSocket(page.webSocketDebuggerUrl, { maxPayload: 100e6 });
 await new Promise((res) => ws.once('open', res));
 const errors = [];
+const reqs = [];
 ws.on('message', (raw) => {
   const m = JSON.parse(raw);
   if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); return; }
   if (m.method === 'Runtime.exceptionThrown') errors.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
+  if (m.method === 'Network.requestWillBeSent') reqs.push(`${m.params.request.method} ${m.params.request.url.replace(/^https?:\/\/[^/]+/, '')}`);
 });
 const send = (method, params = {}) => new Promise((res) => {
   const mid = ++id; pending.set(mid, res);
@@ -38,32 +40,20 @@ const ev = async (expr) => {
 };
 
 await send('Runtime.enable');
+await send('Network.enable');
 await send('Page.enable');
 await send('Page.navigate', { url: TARGET });
 await new Promise((r) => setTimeout(r, 6000));
 
-// instrument: count raw events arriving at #graph, capture phase so nothing can stop them
-await ev(`window.__log = [];
-  for (const t of ['pointerdown','mousedown','mouseup','click','dblclick']) {
-    document.querySelector('#graph').addEventListener(t, (e) => {
-      window.__log.push(t + '(' + e.detail + ')@' + (e.target.id || e.target.className || e.target.tagName));
-    }, true);
-  }
-  'instrumented'`);
-
-// find a genuinely empty spot: scan the graph rect for a point whose hit target is #graph itself
 const spot = await ev(`(() => {
   const g = document.querySelector('#graph'); const r = g.getBoundingClientRect();
-  for (let fy = 0.2; fy < 0.9; fy += 0.1) {
-    for (let fx = 0.2; fx < 0.9; fx += 0.1) {
-      const x = r.x + r.width * fx, y = r.y + r.height * fy;
-      if (document.elementFromPoint(x, y) === g) return JSON.stringify([x, y]);
-    }
+  for (let fy = 0.2; fy < 0.9; fy += 0.1) for (let fx = 0.2; fx < 0.9; fx += 0.1) {
+    const x = r.x + r.width * fx, y = r.y + r.height * fy;
+    if (document.elementFromPoint(x, y) === g) return JSON.stringify([x, y]);
   }
   return JSON.stringify([r.x + r.width / 2, r.y + r.height / 2]);
 })()`);
 const [cx, cy] = JSON.parse(spot);
-console.log(`empty spot: ${Math.round(cx)},${Math.round(cy)}  target=${await ev(`(()=>{const e=document.elementFromPoint(${cx},${cy});return e.id||e.className||e.tagName})()`)}`);
 
 await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy, button: 'none', buttons: 0 });
 for (const clickCount of [1, 2]) {
@@ -71,18 +61,29 @@ for (const clickCount of [1, 2]) {
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', buttons: 0, clickCount });
   await new Promise((r) => setTimeout(r, 50));
 }
-await new Promise((r) => setTimeout(r, 1200));
+await new Promise((r) => setTimeout(r, 800));
+console.log('menu open:', await ev(`!document.querySelector('#createMenu').classList.contains('hidden')`));
 
-console.log('event log:', await ev(`JSON.stringify(window.__log)`));
-console.log('menu open after real dblclick:', await ev(`!document.querySelector('#createMenu').classList.contains('hidden')`));
+// pick "sphere" out of the list the way a user would
+const picked = await ev(`(() => {
+  const items = [...document.querySelectorAll('#createList .create-item')];
+  const it = items.find((e) => e.textContent.trim() === 'sphere') || items[0];
+  if (!it) return 'no items';
+  it.click(); return it.textContent.trim();
+})()`);
+console.log('picked:', picked);
 
-// control: is the handler itself sound? fire a synthetic dblclick straight at #graph
-await ev(`document.querySelector('#createMenu').classList.add('hidden');
-  document.querySelector('#graph').dispatchEvent(new MouseEvent('dblclick', {bubbles:true, clientX:${cx}, clientY:${cy}}));
-  'dispatched'`);
-await new Promise((r) => setTimeout(r, 400));
-console.log('menu open after synthetic dblclick:', await ev(`!document.querySelector('#createMenu').classList.contains('hidden')`),
-            '| items:', await ev(`document.querySelectorAll('#createList .create-item').length`));
+// the render depends on the poll fallback noticing the revision move
+for (let i = 0; i < 12; i++) {
+  const n = await ev(`document.querySelectorAll('#graph .gnode').length`);
+  if (n > 0) { console.log(`blocks rendered: ${n} (after ~${(i + 1) * 0.5}s)`); break; }
+  await new Promise((r) => setTimeout(r, 500));
+  if (i === 11) console.log('blocks rendered: 0 — NEVER APPEARED');
+}
+console.log('api requests:', reqs.filter(r=>r.includes('/api/')).join('\n  ') || '(none)');
+console.log('ws state:', await ev(`(()=>{const p=performance.getEntriesByType('resource').filter(e=>e.name.includes('/ws'));return JSON.stringify(p.map(e=>e.name))})()`));
+console.log('canvas in viewport:', await ev(`!!document.querySelector('#viewport canvas')`));
+console.log('block label:', await ev(`document.querySelector('#graph .gnode .gname')?.textContent || '(none)'`));
 console.log('errors:', errors.join(' | ') || '(none)');
 ws.close();
 process.exit(0);

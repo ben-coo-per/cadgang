@@ -6,7 +6,9 @@ const $ = (sel) => document.querySelector(sel);
 // everything is addressed relative to the directory index.html was served from, so the
 // app works both at the server root and mounted under a subpath (e.g. /cadgang)
 const BASE = location.pathname.replace(/\/[^/]*$/, '');
-const api = (p, opts) => fetch(`${BASE}/api${p}`, opts).then(async (r) => {
+// cache:'no-store' because an intermediary may declare these responses fresh for days —
+// a cached /api/health pins the client to a revision the server has long moved past
+const api = (p, opts) => fetch(`${BASE}/api${p}`, { cache: 'no-store', ...opts }).then(async (r) => {
   const isJson = (r.headers.get('content-type') || '').includes('json');
   const body = isJson ? await r.json() : await r.blob();
   if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
@@ -1648,6 +1650,7 @@ function downloadExportStl(node) {
   if (Number.isFinite(res)) url += `&resolution=${res}`;      // skip expression-valued resolutions
   const file = String(node.params?.filename ?? '').trim();
   if (file) url += `&file=${encodeURIComponent(file)}`;
+  url += `&t=${Date.now()}`;   // a navigation can't set cache:'no-store' — bust it by URL
   stlProgress = true;
   startProgress();
   clearTimeout(stlSafety);

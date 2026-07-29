@@ -33,8 +33,21 @@ function broadcast(obj) {
   }
 }
 
+// The API is live state — never let it be cached. Behind a reverse proxy that stamps a
+// default freshness lifetime on responses (DreamHost's Apache adds max-age=172800) a cached
+// /api/health or /api/document freezes the UI against a stale revision forever.
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.set('Expires', '0');
+  next();
+});
 app.use('/api', apiRouter(doc, ROOT, broadcast));
-app.use(express.static(path.join(ROOT, 'web')));
+
+// Static assets revalidate rather than sit in the cache for days, so a deploy takes effect
+// on the next load instead of whenever the proxy's default lifetime happens to expire.
+app.use(express.static(path.join(ROOT, 'web'), {
+  setHeaders: (res) => res.set('Cache-Control', 'no-cache'),
+}));
 
 doc.onChange(() => broadcast({ type: 'document_changed', revision: doc.revision }));
 
