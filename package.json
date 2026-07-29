@@ -1,6 +1,6 @@
 {
   "name": "cadgang",
-  "version": "0.5.12",
+  "version": "0.5.13",
   "description": "cadgang — a web-based implicit modeling (nTopology-style) CAD tool with an MCP server so Claude Code can drive it",
   "type": "module",
   "private": true,
