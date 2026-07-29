@@ -3,7 +3,10 @@
 import * as THREE from 'three';
 
 const $ = (sel) => document.querySelector(sel);
-const api = (p, opts) => fetch(`/api${p}`, opts).then(async (r) => {
+// everything is addressed relative to the directory index.html was served from, so the
+// app works both at the server root and mounted under a subpath (e.g. /cadgang)
+const BASE = location.pathname.replace(/\/[^/]*$/, '');
+const api = (p, opts) => fetch(`${BASE}/api${p}`, opts).then(async (r) => {
   const isJson = (r.headers.get('content-type') || '').includes('json');
   const body = isJson ? await r.json() : await r.blob();
   if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
@@ -1623,7 +1626,7 @@ $('#importFile').onchange = async (e) => {
   try {
     const buf = await file.arrayBuffer();
     const q = `name=${encodeURIComponent(file.name)}${target ? `&node=${encodeURIComponent(target)}` : ''}`;
-    const r = await fetch(`/api/import/step?${q}`, {
+    const r = await fetch(`${BASE}/api/import/step?${q}`, {
       method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: buf,
     });
     const body = await r.json();
@@ -1637,7 +1640,7 @@ $('#importFile').onchange = async (e) => {
 // progress-bar handling. Called from the block's footer button in renderGraph.
 function downloadExportStl(node) {
   if (!inputIds(node, 'shape').length) return;   // nothing connected → no-op
-  let url = `/api/export/stl?node=${encodeURIComponent(node.id)}`;
+  let url = `${BASE}/api/export/stl?node=${encodeURIComponent(node.id)}`;
   const res = Number(node.params?.resolution);
   if (Number.isFinite(res)) url += `&resolution=${res}`;      // skip expression-valued resolutions
   const file = String(node.params?.filename ?? '').trim();
@@ -2025,7 +2028,7 @@ async function refreshDocument() {
 }
 
 function connectWS() {
-  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${BASE}/ws`);
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'document_changed') refreshDocument().catch(showErr);
