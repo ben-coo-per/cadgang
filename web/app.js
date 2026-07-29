@@ -10,6 +10,9 @@ const api = (p, opts) => fetch(`${BASE}/api${p}`, opts).then(async (r) => {
   const isJson = (r.headers.get('content-type') || '').includes('json');
   const body = isJson ? await r.json() : await r.blob();
   if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+  // a mutation bumps the server revision; when the live socket is unavailable the poll
+  // fallback is what notices, so kick it immediately instead of waiting for the next tick
+  if (opts && opts.method && opts.method !== 'GET') pollSoon();
   return body;
 });
 const post = (p, body) => api(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -2027,8 +2030,35 @@ async function refreshDocument() {
   if (geometrySignature() !== meshSignature) refreshMesh();
 }
 
+// ---- change notification. The socket is the fast path; behind a reverse proxy that does not
+// tunnel Upgrade requests (Apache mod_proxy_http, e.g. the experiments.cwandt.com mount) it
+// never opens, and revision polling stands in for it. Polling loses only mesh_progress — the
+// bar still appears and clears around each request, it just doesn't fill smoothly.
+let pollTimer = null;
+let lastRevision = -1;
+
+async function pollRevision() {
+  const { revision } = await api('/health');
+  if (revision === lastRevision) return;
+  lastRevision = revision;
+  await refreshDocument();
+}
+function pollSoon() {
+  if (pollTimer) setTimeout(() => pollRevision().catch(() => {}), 0);
+}
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(() => pollRevision().catch(() => {}), 1500);
+}
+function stopPolling() {
+  clearInterval(pollTimer);
+  pollTimer = null;
+}
+
 function connectWS() {
+  let opened = false;
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${BASE}/ws`);
+  ws.onopen = () => { opened = true; stopPolling(); };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'document_changed') refreshDocument().catch(showErr);
@@ -2038,7 +2068,13 @@ function connectWS() {
       if (stlProgress && msg.pct >= 1) { stlProgress = false; clearTimeout(stlSafety); endProgress(); }
     }
   };
-  ws.onclose = () => setTimeout(connectWS, 1500);
+  ws.onerror = () => { try { ws.close(); } catch { /* already closing */ } };
+  ws.onclose = () => {
+    startPolling();
+    // a socket that opened once is worth retrying briskly; one that never opened is behind a
+    // proxy that won't tunnel it, so back off hard and let polling carry the session
+    setTimeout(connectWS, opened ? 1500 : 60000);
+  };
 }
 
 // Drive the header version readout from the server's package version (/api/health).
@@ -2061,7 +2097,11 @@ function setVersion(v) {
   applyTransform();
   resize();
   applyCamera();
-  try { setVersion((await api('/health')).version); } catch { /* keep the static fallback */ }
+  try {
+    const health = await api('/health');
+    setVersion(health.version);
+    lastRevision = health.revision;   // baseline so the poll fallback's first tick is a no-op
+  } catch { /* keep the static fallback */ }
   await refreshDocument();
   connectWS();
 })().catch(showErr);
