@@ -1,7 +1,7 @@
 {
   "name": "cadgang",
-  "version": "0.5.14",
-  "description": "cadgang — a web-based implicit modeling (nTopology-style) CAD tool with an MCP server so Claude Code can drive it",
+  "version": "0.6.0",
+  "description": "cadgang — a web-based CAD tool with two lineages in one node graph: exact B-rep (STEP) and implicit fields (STL), driven by an MCP server",
   "type": "module",
   "private": true,
   "main": "src/server/index.js",
@@ -21,6 +21,8 @@
     "@modelcontextprotocol/sdk": "^1.12.0",
     "express": "^4.21.0",
     "occt-import-js": "^0.0.23",
+    "replicad": "^0.23.1",
+    "replicad-opencascadejs": "^0.23.0",
     "ws": "^8.18.0",
     "zod": "^3.23.8"
   },

@@ -1,17 +1,31 @@
 /**
- * cadgang implicit geometry kernel.
+ * cadgang geometry kernel.
  *
  * A model is a graph of nodes (blocks). Each node has a type, params, and
- * named inputs referencing other nodes. Types are either primitives (emit a
- * signed-distance function directly) or operations (combine child SDFs).
+ * named inputs referencing other nodes.
  *
- * compileNode() turns a node graph into a plain JS closure d(x,y,z) -> number
- * (negative inside, positive outside), which everything else (meshing,
- * raymarching, evaluation) consumes.
+ * There are two representations flowing through that one graph:
+ *
+ *   fields  — a node compiles to a closure d(x,y,z) -> signed distance.
+ *             Unbounded expressive power (lattices, TPMS, smooth blends,
+ *             drape), meshed by surface nets, exported as STL.
+ *
+ *   B-rep   — a node also carries an exact OpenCascade solid (see brep.js and
+ *             brepnodes.js). Exact analytic surfaces, real fillets, exported
+ *             as STEP.
+ *
+ * compileNode() returns both: { fn, bbox, brep }. `brep` is null for any node
+ * whose subtree passed through a field operation — the bridge from B-rep to
+ * field is automatic and one-way, and everything downstream of it is STL-only.
  */
 
 import { evalExpr } from './expr.js';
 import { buildMeshDistance, buildFaceExtrusion } from './mesh.js';
+import { GraphError } from './errors.js';
+import { BREP_NODE_TYPES } from './brepnodes.js';
+import { brepDistance, brepBBox, isSketch, isField, FIELD_VALUE } from './brep.js';
+
+export { GraphError };
 
 const TAU = Math.PI * 2;
 
@@ -511,12 +525,18 @@ function compilePolyhedron(p) {
 
 /**
  * Each type:
- *   params:  { name: {type:'number'|'vec3', default, min?, max?, description} }
- *   inputs:  { name: {many?:true, optional?:true, description} }
+ *   params:  { name: {type, default, min?, max?, options?, description} }
+ *            types: number | vec2 | vec3 | text | bool | select | points | asset
+ *   inputs:  { name: {many?:true, optional?:true, kind?, description} }
  *   compile: (p, kids) => (x,y,z)=>d      kids mirrors `inputs` (fn or [fn])
  *   bbox:    (p, kidBoxes) => {min,max}|null   null = unbounded
+ *   brep:    (p, kidBreps) => Shape       exact solid, for the B-rep lineage
+ *
+ * A block with only `compile` is a field block; one with only `brep` is exact
+ * (its field is derived on demand); one with both propagates the exact solid
+ * through while keeping its own field behaviour (e.g. the export sinks).
  */
-export const NODE_TYPES = {
+const FIELD_NODE_TYPES = {
   // ------------------------------------------------------------ primitives
   sphere: {
     category: 'primitive',
@@ -883,6 +903,11 @@ export const NODE_TYPES = {
     inputs: { shape: { description: 'Shape to export' } },
     compile: (p, kids) => kids.shape,
     bbox: (p, kb) => kb.shape,
+    // Pass a genuine exact solid through untouched so the viewport still
+    // renders the crisp B-rep tessellation when an STL sink sits on an exact
+    // chain. Anything else — unwired, a sketch, or the field sentinel — leaves
+    // this sink field-only, which is exactly what an STL export wants.
+    brep: (p, kids) => (kids.shape && !isField(kids.shape) && !isSketch(kids.shape) ? kids.shape : null),
   },
 
   imported_mesh: {
@@ -1024,9 +1049,18 @@ export const NODE_TYPES = {
   },
 };
 
-// ---------------------------------------------------------------- compile
+/**
+ * The full block registry: field blocks above, exact B-rep blocks from
+ * brepnodes.js. One namespace, one graph — a block does not care which lineage
+ * its neighbours belong to, only whether the value it is handed is a solid,
+ * a sketch or a field.
+ */
+export const NODE_TYPES = { ...FIELD_NODE_TYPES, ...BREP_NODE_TYPES };
 
-export class GraphError extends Error {}
+/** True if this block type produces an exact solid (and so can reach STEP). */
+export const isExactType = (type) => Boolean(NODE_TYPES[type]?.brep);
+
+// ---------------------------------------------------------------- compile
 
 /** Resolve one authored scalar (number or string-expression) against `vars`. */
 function resolveScalar(v, vars, where) {
@@ -1045,15 +1079,32 @@ export function resolveParams(type, params = {}, vars = {}) {
   const out = {};
   for (const [name, def] of Object.entries(spec.params)) {
     const raw = params[name] ?? def.default;
+    const where = `${name}' of ${type}`;
     if (def.type === 'number') {
-      let v = resolveScalar(raw, vars, `${name}' of ${type}`);
+      let v = resolveScalar(raw, vars, where);
       if (def.min !== undefined && v < def.min) v = def.min;
       if (def.max !== undefined && v > def.max) v = def.max;
       out[name] = v;
-    } else if (def.type === 'vec3') {
-      if (!Array.isArray(raw) || raw.length !== 3)
-        throw new GraphError(`Param '${name}' of ${type} must be an array of 3 numbers`);
+    } else if (def.type === 'vec3' || def.type === 'vec2') {
+      const n = def.type === 'vec3' ? 3 : 2;
+      if (!Array.isArray(raw) || raw.length !== n)
+        throw new GraphError(`Param '${name}' of ${type} must be an array of ${n} numbers`);
       out[name] = raw.map((c, i) => resolveScalar(c, vars, `${name}[${i}]' of ${type}`));
+    } else if (def.type === 'bool') {
+      out[name] = raw === true || raw === 'true' || raw === 1 || raw === '1';
+    } else if (def.type === 'select') {
+      const v = String(raw);
+      if (!def.options.includes(v))
+        throw new GraphError(`Param '${name}' of ${type} must be one of: ${def.options.join(', ')} (got '${v}')`);
+      out[name] = v;
+    } else if (def.type === 'points') {
+      if (!Array.isArray(raw))
+        throw new GraphError(`Param '${name}' of ${type} must be a list of [x, y] or [x, y, cornerRadius] points`);
+      out[name] = raw.map((pt, i) => {
+        if (!Array.isArray(pt) || pt.length < 2 || pt.length > 3)
+          throw new GraphError(`Point ${i} of '${where} must be [x, y] or [x, y, cornerRadius]`);
+        return pt.map((c, j) => resolveScalar(c, vars, `${name}[${i}][${j}]' of ${type}`));
+      });
     } else {
       out[name] = raw;
     }
@@ -1062,8 +1113,50 @@ export function resolveParams(type, params = {}, vars = {}) {
 }
 
 /**
- * Compile a node (by id) of a document into { fn, bbox }.
+ * Build the { fn, bbox, brep } triple for one node from its resolved params and
+ * already-built children.
+ *
+ * Field blocks (`compile`) define their own distance function and box. Exact
+ * blocks (`brep` only) get both derived from the solid — and the distance
+ * function is derived lazily, because tessellating a solid and building its BVH
+ * is wasted work when the graph only ever wants the exact geometry.
+ */
+function buildResult(spec, params, kids, kidBoxes, kidBreps, ctx) {
+  const brep = spec.brep ? spec.brep(params, kidBreps, ctx) : null;
+
+  if (spec.compile) {
+    return { fn: spec.compile(params, kids, ctx), bbox: spec.bbox(params, kidBoxes, ctx), brep };
+  }
+
+  if (isSketch(brep)) {
+    // A sketch has no interior, so there is no distance to it as a solid.
+    const fn = () => {
+      throw new GraphError('A sketch has no volume — extrude or revolve it before using it as a shape');
+    };
+    return { fn, bbox: brepBBox(brep), brep };
+  }
+
+  // The one-way bridge, taken only if something downstream actually asks for a
+  // distance. The closure it caches holds plain typed arrays, so it stays valid
+  // after the shape's scope is disposed.
+  let dist = null;
+  return {
+    fn: (x, y, z) => (dist ??= brepDistance(brep))(x, y, z),
+    bbox: brepBBox(brep),
+    brep,
+  };
+}
+
+/**
+ * Compile a node (by id) of a document into { fn, bbox, brep }.
  * document: { nodes: { id: {id,type,params,inputs} }, output }
+ *
+ * `brep` is the exact solid when the whole subtree stayed in the B-rep lineage,
+ * and null as soon as any field block took part. Callers use it to decide
+ * between exact tessellation and surface nets, and to allow or refuse STEP.
+ *
+ * B-rep blocks allocate on the OCCT heap, so a graph containing them must be
+ * compiled inside a beginBrepScope() from brep.js.
  */
 export function compileNode(doc, nodeId) {
   const cache = new Map();
@@ -1079,7 +1172,7 @@ export function compileNode(doc, nodeId) {
     visiting.add(id);
 
     const params = resolveParams(node.type, node.params, doc.vars || {});
-    const kids = {}, kidBoxes = {};
+    const kids = {}, kidBoxes = {}, kidBreps = {};
     for (const [slot, sdef] of Object.entries(spec.inputs)) {
       const ref = (node.inputs || {})[slot];
       if (sdef.many) {
@@ -1089,25 +1182,55 @@ export function compileNode(doc, nodeId) {
         const built = ids.map(build);
         kids[slot] = built.map((b) => b.fn);
         kidBoxes[slot] = built.map((b) => b.bbox);
+        kidBreps[slot] = built.map((b) => b.brep ?? FIELD_VALUE);
       } else {
         if (!ref && !sdef.optional)
           throw new GraphError(`Node '${id}' (${node.type}) is missing required input '${slot}'`);
         const b = ref ? build(ref) : null;
         kids[slot] = b ? b.fn : null;
         kidBoxes[slot] = b ? b.bbox : null;
+        // A connected slot always carries a value: the exact solid when the
+        // subtree stayed in the B-rep lineage, otherwise the field sentinel, so
+        // downstream errors can tell 'not wired' from 'wired past the bridge'.
+        kidBreps[slot] = b ? (b.brep ?? FIELD_VALUE) : null;
       }
     }
 
     visiting.delete(id);
     // ctx gives asset-backed and bounds-aware blocks access to the document
     // and their children's boxes without changing the (params, kids) contract.
-    const ctx = { doc, node, kidBoxes };
-    const result = { fn: spec.compile(params, kids, ctx), bbox: spec.bbox(params, kidBoxes, ctx) };
+    const ctx = { doc, node, kidBoxes, kidBreps };
+    const result = buildResult(spec, params, kids, kidBoxes, kidBreps, ctx);
     cache.set(id, result);
     return result;
   }
 
   return build(nodeId);
+}
+
+/**
+ * Whether a node's subtree contains any B-rep block — i.e. whether compiling it
+ * needs the OCCT kernel loaded. Walks types only, so it is cheap enough to call
+ * before every compile.
+ */
+export function needsBrepKernel(doc, nodeId) {
+  const seen = new Set();
+  const walk = (id) => {
+    if (!id || seen.has(id)) return false;
+    seen.add(id);
+    const node = doc.nodes[id];
+    const spec = node && NODE_TYPES[node.type];
+    if (!spec) return false;
+    if (spec.brep && node.type !== 'export_stl') return true;
+    for (const slot of Object.keys(spec.inputs)) {
+      const ref = (node.inputs || {})[slot];
+      for (const child of Array.isArray(ref) ? ref : ref != null ? [ref] : []) {
+        if (walk(child)) return true;
+      }
+    }
+    return false;
+  };
+  return walk(nodeId);
 }
 
 /** Bounding box with fallback + padding, ready for meshing/rendering. */
@@ -1125,11 +1248,22 @@ export function nodeTypeCatalog() {
     out[name] = {
       category: spec.category,
       description: spec.description,
+      // 'sketch' for 2D profiles, 'brep' for exact solids, 'field' for implicit
+      // geometry. Tells the UI (and an agent) what a block can be wired into.
+      kind: spec.kind ?? (spec.brep && !spec.compile ? 'brep' : 'field'),
+      // Exact blocks keep a real B-rep, so their branch can reach STEP.
+      exact: Boolean(spec.brep),
       params: Object.fromEntries(
-        Object.entries(spec.params).map(([k, v]) => [k, { type: v.type, default: v.default, min: v.min, max: v.max, description: v.description }])
+        Object.entries(spec.params).map(([k, v]) => [k, {
+          type: v.type, default: v.default, min: v.min, max: v.max,
+          options: v.options, description: v.description,
+        }])
       ),
       inputs: Object.fromEntries(
-        Object.entries(spec.inputs).map(([k, v]) => [k, { many: !!v.many, optional: !!v.optional, description: v.description || '' }])
+        Object.entries(spec.inputs).map(([k, v]) => [k, {
+          many: !!v.many, optional: !!v.optional, kind: v.kind ?? 'any',
+          description: v.description || '',
+        }])
       ),
     };
   }

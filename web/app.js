@@ -23,10 +23,14 @@ const del = (p) => api(p, { method: 'DELETE' });
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-// machined-metal swatch per category (CW&T palette) — used for create-menu dots
-const CAT_COLOR = { primitive: '#b9b8b3', boolean: '#3a3a38', modify: '#b08a4d', output: '#e35a1e' };
+// machined-metal swatch per category (CW&T palette) — used for create-menu dots.
+// sketch/brep are the exact (B-rep) lineage and get their own blueprint-blue.
+const CAT_COLOR = {
+  primitive: '#b9b8b3', boolean: '#3a3a38', modify: '#b08a4d', output: '#e35a1e',
+  sketch: '#4a7fb5', brep: '#2f5d8a',
+};
 // create-menu group order (unknown categories fall after these, alphabetically)
-const CAT_ORDER = ['primitive', 'boolean', 'modify', 'output'];
+const CAT_ORDER = ['sketch', 'brep', 'primitive', 'boolean', 'modify', 'output'];
 
 let catalog = {};
 let doc = { nodes: {}, output: null, revision: 0 };
@@ -87,6 +91,24 @@ const material = new THREE.MeshStandardMaterial({
   color: STAINLESS, metalness: 0.25, roughness: 0.5, side: THREE.DoubleSide, // machined stainless
 });
 let meshObj = null;
+
+// B-rep edge overlay: the real trimmed curves of an exact solid (and the whole
+// of a sketch). Field geometry has no topology to draw, so this stays empty for
+// it — which is itself an honest signal of which lineage you are looking at.
+const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x2f5d8a, transparent: true, opacity: 0.85 });
+let edgeObj = null;
+
+/** Replace the edge overlay with `edges` ({lines:[x,y,z,...]}), or clear it. */
+function setEdgeOverlay(edges) {
+  if (edgeObj) { scene.remove(edgeObj); edgeObj.geometry.dispose(); edgeObj = null; }
+  if (!edges?.lines?.length) return;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(edges.lines, 3));
+  edgeObj = new THREE.LineSegments(geo, edgeMaterial);
+  // Nudge toward the camera so edges are not z-fought by the faces they bound.
+  edgeObj.renderOrder = 1;
+  scene.add(edgeObj);
+}
 
 // Retint the 3D scene (background, grid, lighting) to match the UI theme.
 function applyViewportTheme() {
@@ -583,6 +605,7 @@ async function refreshMesh() {
   try {
     if (!doc.output || Object.keys(doc.nodes).length === 0) {
       if (meshObj) { scene.remove(meshObj); meshObj.geometry.dispose(); meshObj = null; }
+      setEdgeOverlay(null);
       $('#stats').textContent = 'NO OUTPUT · DOUBLE-CLICK THE CANVAS TO ADD A BLOCK';
       status.textContent = '';
       meshSignature = geometrySignature();   // "empty" mesh reflects this state → don't loop on it
@@ -596,6 +619,22 @@ async function refreshMesh() {
     // always request colors=1 so per-vertex owners exist for viewport part-picking/drag;
     // vertex tinting itself still only applies in colorMode (applyMeshColors guards on it)
     const m = await api(`/mesh?resolution=${resolution}&colors=1`);
+
+    // Exact blocks ship their real B-rep edge curves; a sketch ships only those.
+    // Drawing them over the shaded mesh is what makes exact geometry read as
+    // exact — crisp silhouettes instead of a faceted approximation of them.
+    setEdgeOverlay(m.edges);
+
+    if (m.kind === 'sketch') {
+      if (meshObj) { scene.remove(meshObj); meshObj.geometry.dispose(); meshObj = null; }
+      lastMesh = null;
+      meshSignature = geometrySignature();
+      $('#stats').textContent = 'SKETCH · 2D PROFILE · CONNECT TO AN EXTRUDE OR REVOLVE';
+      stopSpinner();
+      status.textContent = `REV ${m.revision}`;
+      return;
+    }
+
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3));
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(m.normals, 3));
@@ -616,9 +655,14 @@ async function refreshMesh() {
     meshSignature = geometrySignature();   // record only on success so a failure re-attempts
 
     const s = m.stats;
+    // Exact solids have no sampling grid to report; what matters instead is the
+    // B-rep face count, so the readout says which representation you are seeing.
+    const tail = m.exact
+      ? `EXACT B-REP · ${(m.faces?.length ?? 0).toLocaleString()} FACES`
+      : `GRID ${s.gridDims.join('×')}`;
     $('#stats').textContent =
       `${s.triangleCount.toLocaleString()} TRIS · ${s.vertexCount.toLocaleString()} VERTS · ` +
-      `${fmt(s.volume)} MM³ · ${fmt(s.surfaceArea)} MM² · GRID ${s.gridDims.join('×')}`;
+      `${fmt(s.volume)} MM³ · ${fmt(s.surfaceArea)} MM² · ${tail}`;
     stopSpinner();
     status.textContent = `REV ${m.revision}`;
 
@@ -1011,13 +1055,49 @@ function renderGraph() {
         inp.autocomplete = 'off'; inp.spellcheck = false;
         inp.onchange = () => patch(`/nodes/${node.id}`, { params: { [pname]: inp.value } }).catch(showErr);
         row.append(name, inp);
-      } else if (pdef.type === 'vec3') {
+      } else if (pdef.type === 'vec3' || pdef.type === 'vec2') {
+        const n = pdef.type === 'vec3' ? 3 : 2;
         row.appendChild(name);
         const triple = document.createElement('div');
         triple.className = 'triple';
-        const arr = Array.isArray(val) ? val : [val, val, val];
-        for (let i = 0; i < 3; i++) triple.appendChild(makeParamInput(pname, arr[i], i));
+        const arr = Array.isArray(val) ? val : new Array(n).fill(val);
+        for (let i = 0; i < n; i++) triple.appendChild(makeParamInput(pname, arr[i], i));
         row.appendChild(triple);
+      } else if (pdef.type === 'select') {
+        // fixed vocabulary (sketch plane, boolean op, edge selection)
+        const sel = document.createElement('select');
+        sel.className = 'pselect';
+        for (const opt of pdef.options || []) {
+          const o = document.createElement('option');
+          o.value = opt; o.textContent = opt;
+          if (String(val) === opt) o.selected = true;
+          sel.appendChild(o);
+        }
+        sel.onchange = () => patch(`/nodes/${node.id}`, { params: { [pname]: sel.value } }).catch(showErr);
+        sel.onmousedown = (e) => e.stopPropagation();   // don't start a node drag
+        row.append(name, sel);
+      } else if (pdef.type === 'bool') {
+        const box = document.createElement('input');
+        box.type = 'checkbox'; box.className = 'pcheck';
+        box.checked = val === true || val === 'true' || val === 1;
+        box.onchange = () => patch(`/nodes/${node.id}`, { params: { [pname]: box.checked } }).catch(showErr);
+        box.onmousedown = (e) => e.stopPropagation();
+        row.append(name, box);
+      } else if (pdef.type === 'points') {
+        // Sketch profile: one "x, y[, cornerRadius]" per line. Editing as text
+        // keeps the whole profile visible and diffable; a canvas sketcher would
+        // be the next step, and would write into this same param.
+        row.classList.add('points');
+        const ta = document.createElement('textarea');
+        ta.className = 'ppoints'; ta.spellcheck = false; ta.rows = Math.min(10, (val?.length || 1) + 1);
+        ta.value = (Array.isArray(val) ? val : []).map((p) => p.join(', ')).join('\n');
+        ta.onmousedown = (e) => e.stopPropagation();
+        ta.onchange = () => {
+          const pts = ta.value.split('\n').map((l) => l.trim()).filter(Boolean)
+            .map((l) => l.split(/[,\s]+/).map((s) => (/^-?\d*\.?\d+$/.test(s) ? Number(s) : s)));
+          patch(`/nodes/${node.id}`, { params: { [pname]: pts } }).catch(showErr);
+        };
+        row.append(name, ta);
       } else {
         const numInput = makeParamInput(pname, val, null);
         if (Number.isFinite(pdef.min) && Number.isFinite(pdef.max)) {
@@ -1034,15 +1114,16 @@ function renderGraph() {
       body.appendChild(row);
     }
 
-    // export_stl blocks get a download button (disabled until a shape is connected)
-    if (node.type === 'export_stl') {
+    // export sinks get a download button (disabled until a shape is connected)
+    if (node.type === 'export_stl' || node.type === 'export_step') {
+      const step = node.type === 'export_step';
       const row = document.createElement('div');
       row.className = 'export-row';
       const btn = document.createElement('button');
-      btn.type = 'button'; btn.className = 'export-dl'; btn.textContent = '⤓ STL';
+      btn.type = 'button'; btn.className = 'export-dl'; btn.textContent = step ? '⤓ STEP' : '⤓ STL';
       if (!inputIds(node, 'shape').length) { btn.disabled = true; btn.title = 'connect a shape to export'; }
-      else btn.title = 'Download binary STL';
-      btn.onclick = (e) => { e.stopPropagation(); downloadExportStl(node); };
+      else btn.title = step ? 'Download exact B-rep STEP' : 'Download binary STL';
+      btn.onclick = (e) => { e.stopPropagation(); downloadExport(node, step ? 'step' : 'stl'); };
       row.appendChild(btn);
       body.appendChild(row);
     }
@@ -1641,13 +1722,15 @@ $('#importFile').onchange = async (e) => {
   finally { e.target.value = ''; }  // allow re-importing the same file
 };
 
-// ---- export_stl block download: same-window navigation, mirrors the old Export STL button's
+// ---- export block download: same-window navigation, mirrors the old Export STL button's
 // progress-bar handling. Called from the block's footer button in renderGraph.
-function downloadExportStl(node) {
+// `kind` is 'stl' (meshed) or 'step' (exact B-rep).
+function downloadExport(node, kind) {
   if (!inputIds(node, 'shape').length) return;   // nothing connected → no-op
-  let url = `${BASE}/api/export/stl?node=${encodeURIComponent(node.id)}`;
+  let url = `${BASE}/api/export/${kind}?node=${encodeURIComponent(node.id)}`;
   const res = Number(node.params?.resolution);
-  if (Number.isFinite(res)) url += `&resolution=${res}`;      // skip expression-valued resolutions
+  // STEP has no meshing resolution — it writes the exact surfaces.
+  if (kind === 'stl' && Number.isFinite(res)) url += `&resolution=${res}`;  // skip expression-valued resolutions
   const file = String(node.params?.filename ?? '').trim();
   if (file) url += `&file=${encodeURIComponent(file)}`;
   url += `&t=${Date.now()}`;   // a navigation can't set cache:'no-store' — bust it by URL

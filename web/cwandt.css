@@ -65,6 +65,11 @@
   --metal-copper: #b56b3f;
   --metal-cerakote: #1a1a18;
 
+  /* Blueprint blues — reserved for the exact (B-rep) lineage: sketches,
+     solid operations, and the edge overlay on exact geometry. */
+  --blueprint: #2f5d8a;
+  --blueprint-light: #4a7fb5;
+
   /* Signal accents (sparingly) */
   --signal-red: #d11d1d;
   --signal-orange: #e35a1e;

@@ -201,6 +201,9 @@ main.stacked #viewport { min-height: 0; }
 .gnode.cat-boolean::before   { background: var(--metal-graphite); }
 .gnode.cat-modify::before    { background: var(--metal-brass); }
 .gnode.cat-output::before    { background: var(--signal-orange); }
+/* the exact (B-rep) lineage reads as blueprint blue against the metals */
+.gnode.cat-sketch::before    { background: var(--blueprint-light); }
+.gnode.cat-brep::before      { background: var(--blueprint); }
 /* color mode: per-node hue stripe (set inline as --stripe) wins over category */
 html.color-mode .gnode::before { background: var(--stripe, var(--metal-titanium)); }
 
@@ -300,6 +303,24 @@ html.color-mode .gnode::before { background: var(--stripe, var(--metal-titanium)
 .param-row.vec3 { flex-direction: column; align-items: stretch; gap: 3px; }
 .param-row.vec3 .triple { display: flex; gap: 6px; }
 .param-row.vec3 .triple input { flex: 1 1 0; width: auto; min-width: 0; }
+
+/* select / bool / points — the B-rep param widgets */
+.param-row .pselect {
+  flex: 1 1 auto; min-width: 0; padding: 3px 6px;
+  font: inherit; font-size: var(--fs-12);
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 2px;
+}
+.param-row .pselect:hover { border-color: var(--blueprint); }
+.param-row .pcheck { flex: 0 0 auto; margin: 0; accent-color: var(--blueprint); cursor: pointer; }
+.param-row.points { flex-direction: column; align-items: stretch; gap: 3px; }
+.param-row.points .ppoints {
+  width: 100%; min-width: 0; resize: vertical;
+  font: inherit; font-size: var(--fs-12); line-height: 1.45;
+  padding: 4px 6px; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 2px;
+}
+.param-row.points .ppoints:focus { outline: none; border-color: var(--blueprint); }
 
 /* bounded scalar params: label + number on top, a full-width drag slider below */
 .param-row.has-slider { flex-direction: column; align-items: stretch; gap: 4px; }

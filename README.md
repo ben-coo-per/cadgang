@@ -1,6 +1,8 @@
 # cadgang
 
-Block-based **implicit modeling CAD** that runs in your browser — with a REST API, live WebSocket updates, and a built-in **MCP server** so Claude Code can drive it end-to-end: build models, inspect geometry, render previews, and export STLs.
+Block-based CAD that runs in your browser — with a REST API, live WebSocket updates, and a built-in **MCP server** so Claude Code can drive it end-to-end: build models, inspect geometry, render previews, and export STL **and STEP**.
+
+cadgang carries **two geometry representations in one node graph**: exact **B-rep** solids (OpenCascade — real fillets, real STEP out) and implicit **distance fields** (lattices, TPMS infill, smooth blends, drape). They meet at a deliberately [one-way bridge](#the-two-lineages).
 
 ![cadgang UI](docs/screenshot-ui.png)
 
@@ -63,21 +65,62 @@ The cadgang web server must be running (`npm start`). Set `CADGANG_URL` if it's 
 | `cadgang_clear_document` | Wipe the model (destructive) |
 | `cadgang_undo` | Undo (or redo) the last model edit |
 | `cadgang_import_step` | Import a STEP/IGES/BREP file from disk as an `imported_mesh` block |
+| `cadgang_export_step` | Write an exact STEP B-rep file (refuses field geometry) |
 | `cadgang_eval_sdf` | Sample signed distances at points (thickness/clearance checks) |
-| `cadgang_mesh_stats` | Triangle count, volume, surface area, bounds |
+| `cadgang_mesh_stats` | Triangle count, volume, surface area, bounds, and whether the result is exact |
 | `cadgang_export_stl` | Write a binary STL to `exports/` |
 | `cadgang_render_preview` | Server-side raymarched PNG — Claude can *see* the model |
 
 Ask Claude Code things like: *"Build a 60×40×24 mm rounded enclosure with a 2 mm wall, fill it with a 9 mm gyroid lattice, show me a preview, and export it for printing."*
 
+## The two lineages
+
+A block belongs to one of two representations, and the block's colour tells you which — blueprint blue for exact, machined metal for fields.
+
+| | **B-rep (exact)** | **Fields (implicit)** |
+|---|---|---|
+| Geometry is | trimmed analytic surfaces + topology | a function `d(x,y,z)` |
+| Meshed by | OpenCascade tessellation | surface nets over a grid |
+| Exports to | **STEP** (and STL) | STL |
+| Good at | precise dimensions, real fillets, machining handoff | lattices, TPMS infill, smooth blends, drape |
+| Can't do | lattices, field blends | exact fillets, exact circles, STEP |
+
+**A B-rep solid can feed any field block.** cadgang derives the distance field from the exact solid automatically, so you can fillet a part exactly and *then* fill it with a gyroid.
+
+**A field can never go back.** Recovering exact trimmed surfaces from a distance field is a fitting problem, not a conversion, and it fails outright on the blends and lattices fields are best at. So the moment a field block touches a shape, that branch loses its B-rep and becomes STL-only — and `export_step` refuses it with an explanation rather than writing a faceted mesh into a `.step` file that no CAD kernel will fillet.
+
+Practically: **keep the whole chain in B-rep blocks for anything that has to ship as STEP**, and branch into fields at the end.
+
 ## Block types
+
+### Exact (B-rep) blocks
+
+- **Sketches** — `sketch_rect` (with corner rounding), `sketch_circle`, `sketch_polygon`, `sketch_profile` (authored point list; a third number on a point rounds that corner). Each sits on a plane (`XY`/`XZ`/`YZ`/…) at an `offset`. A sketch is a 2D profile, not a solid — extrude or revolve it.
+- **Solids** — `brep_box`, `brep_cylinder`, `brep_sphere`, `brep_extrude` (with `symmetric` to centre on the sketch plane), `brep_revolve`
+- **Operations** — `brep_boolean` (union / subtract / intersect, computing the real intersection curves), `brep_fillet` (true rolling-ball fillet), `brep_chamfer`, `brep_shell`, `brep_transform`
+- **Output** — `export_step` (pass-through sink with a download button)
+
+Edge selection on `brep_fillet`/`brep_chamfer` is `all` or the edges running along `x`/`y`/`z`. Viewport edge picking is not wired up yet — see [Limitations](#limitations).
+
+### Field (implicit) blocks
 
 - **Primitives** — `sphere`, `box` (with rounding), `cylinder`, `torus`, `capsule`, `plane`, `gyroid`, `schwarz_p` (TPMS lattices), `polyhedron`, `spiky_sphere`, `imported_mesh` (STEP/IGES import), `extrude_face` (extrude a selected surface of an import)
 - **Booleans** — `union`, `intersect`, `subtract`, `smooth_union`, `smooth_intersect`, `smooth_subtract` (blended fillets)
 - **Modifiers** — `shell` (hollow to wall thickness), `offset`, `transform` (translate / rotate / scale), `drape` (vacuum-form a sheet over shapes, with smoothness control), `linear_array`, `polar_array`
-- **Output** — `export_stl` (pass-through sink with a download button; params: filename, resolution)
+- **Output** — `export_stl` (pass-through sink with a download button; params: filename, resolution). Fed by an exact solid, it tessellates the real surfaces instead of remeshing the field — smaller and more faithful.
 
 Units are millimeters, world is Z-up. `plane`/`gyroid`/`schwarz_p` are unbounded fields — intersect them with a bounded body (that is how lattice infills are made).
+
+### Limitations
+
+Honest about what this is not, yet:
+
+- **No interactive sketcher.** Profiles are authored as numbers (`sketch_profile`'s point list), not drawn on a plane with dimensional constraints. A real sketcher needs a constraint solver — FreeCAD's `planegcs` compiled to WASM is the usual answer — and would write into this same `points` param.
+- **No viewport edge/face picking for fillets.** `brep_fillet` selects by direction, not by clicking an edge. The tessellation already ships per-face B-rep ids, so the data is there; the UI is not.
+- **`brep_revolve` is full-turn only.** Partial sweeps need a wedge cut that isn't built yet.
+- **STEP import is still tessellated** (see below), so an imported file enters the *field* lineage and cannot be filleted or re-exported as STEP. Exact B-rep import is the obvious next step — OpenCascade's `importSTEP` is already linked in.
+- **The OCCT heap creeps.** Compiling B-rep blocks grows OpenCascade's WASM heap by roughly 100 MB per 800 mesh requests and it never shrinks. cadgang forces a GC after each burst of B-rep work, which reclaims what replicad's JS wrappers hold (16 → 40 MB becomes 16 → 19 MB over 300 boolean compiles), but the remainder is inside OCCT's own allocator — collecting after *every* operation does not change it. `GET /api/health` reports `brep.heapBytes` so you can watch it; restarting the server clears it. Running the kernel in a recycled worker thread is the real fix.
+- **Fillets fail on tangent seams.** Filleting the vertical edges of an already-rounded profile asks OCCT to fillet a tangent seam and it refuses. The error says so in OCCT's own words.
 
 ### STEP import
 
@@ -103,7 +146,8 @@ Upload a `.step`/`.stp` (or IGES/BREP) file — **Import STEP** in the web UI, `
 | `GET /api/assets` · `GET /api/assets/:id` · `DELETE /api/assets/:id` | Imported mesh assets (`:id` returns full triangles + per-face ranges) |
 | `GET /api/mesh?resolution=90` | Surface-nets mesh (JSON) |
 | `GET /api/mesh/stats` | Stats only |
-| `GET /api/export/stl?resolution=128&file=name` | Binary STL |
+| `GET /api/export/stl?resolution=128&file=name` | Binary STL (exact tessellation when the chain is B-rep) |
+| `GET /api/export/step?file=name` | STEP B-rep file; 400s with an explanation if the chain crossed into a field |
 | `GET /api/preview.png?yaw=-35&pitch=25&node=id` | Raymarched preview (any block, not just the output) |
 
 `ws://…/ws` broadcasts `{type: "document_changed", revision}` on every edit.
@@ -112,7 +156,11 @@ Upload a `.step`/`.stp` (or IGES/BREP) file — **Import STEP** in the web UI, `
 
 ```
 src/core/     geometry kernel — pure JS, no server dependency
-  sdf.js        block registry, graph → SDF closure compiler, bbox propagation
+  sdf.js        merged block registry, graph compiler ({fn, bbox, brep}), bbox propagation
+  brep.js       exact B-rep kernel: OCCT/replicad lifecycle, ops, tessellation,
+                STEP I/O, shape-memory scopes, and the one-way bridge to SDF
+  brepnodes.js  exact block definitions (sketches, solids, booleans, fillets)
+  errors.js     GraphError, split out so brep.js and sdf.js can share it
   expr.js       safe expression evaluator for variable-driven params
   mesher.js     naive surface-nets mesher (watertight, SDF-gradient normals)
   mesh.js       mesh utilities: welding, BVH signed distance, per-face ranges
@@ -129,6 +177,6 @@ web/          Three.js viewport + node-graph editor (no build step, no framework
 
 - [kokopelli](https://github.com/mkeeter/kokopelli) → [Antimony](https://github.com/mkeeter/antimony) → [libfive](https://libfive.com) — Matt Keeter's f-rep CAD tools, the reason this way of thinking about geometry exists in open source
 - [nTopology](https://www.ntop.com/) — implicit modeling at industrial scale; the gyroid-infill demo is their party trick
-- [three.js](https://threejs.org) (MIT, vendored in `web/vendor/`) · [occt-import-js](https://github.com/kovacsv/occt-import-js) (OpenCascade WASM) · [Space Mono](https://fonts.google.com/specimen/Space+Mono) (SIL OFL 1.1, license in `web/fonts/OFL.txt`)
+- [three.js](https://threejs.org) (MIT, vendored in `web/vendor/`) · [occt-import-js](https://github.com/kovacsv/occt-import-js) (OpenCascade WASM) · [replicad](https://replicad.xyz) + [opencascade.js](https://github.com/donalffons/opencascade.js) (the B-rep kernel, MIT/LGPL) · [Space Mono](https://fonts.google.com/specimen/Space+Mono) (SIL OFL 1.1, license in `web/fonts/OFL.txt`)
 
 Built by [CW&T](https://cwandt.com) with Claude Code.

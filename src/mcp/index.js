@@ -58,7 +58,16 @@ server.registerTool(
     title: 'List cadgang block types',
     description: `List every available cadgang block (node) type with its category, parameters (name, type, default, description) and input slots. Call this first to learn the modeling vocabulary.
 
-Categories: 'primitive' (sphere, box, cylinder, torus, capsule, plane, gyroid, schwarz_p, spiky_sphere, polyhedron, imported_mesh, extrude_face), 'boolean' (union, intersect, subtract, smooth_*), 'modify' (shell, offset, transform, drape, linear_array, polar_array), 'output' (export_stl pass-through sink).
+cadgang has TWO geometry lineages in one graph, and each block's 'kind' field says which it belongs to:
+
+FIELD blocks (kind 'field') — implicit/SDF geometry, meshed by surface nets, exported as STL.
+  'primitive' (sphere, box, cylinder, torus, capsule, plane, gyroid, schwarz_p, spiky_sphere, polyhedron, imported_mesh, extrude_face), 'boolean' (union, intersect, subtract, smooth_*), 'modify' (shell, offset, transform, drape, linear_array, polar_array).
+
+B-REP blocks (kind 'brep'/'sketch', flagged exact:true) — exact OpenCascade solids, exported as real STEP.
+  'sketch' (sketch_rect, sketch_circle, sketch_polygon, sketch_profile) produce 2D profiles; extrude or revolve them before use.
+  'brep' (brep_box, brep_cylinder, brep_sphere, brep_extrude, brep_revolve, brep_boolean, brep_fillet, brep_chamfer, brep_shell, brep_transform).
+
+THE BRIDGE IS ONE-WAY. A B-rep solid can feed any field block (its distance field is derived automatically), but a field can never go back to B-rep. As soon as a field block touches a shape, that branch is STL-only and export_step will refuse it. So: for precision parts that must ship as STEP, keep the whole chain in B-rep blocks and use brep_fillet/brep_boolean rather than their field namesakes. Use field blocks for lattices, TPMS infill, smooth blends and drape — things B-rep cannot express.
 
 Note: plane/gyroid/schwarz_p are unbounded fields — intersect them with a bounded body. All dimensions are millimeters; the world is Z-up.`,
     inputSchema: {},
@@ -303,6 +312,41 @@ Args:
       const bytes = (await res.arrayBuffer()).byteLength;
       const out = { savedTo, bytes, triangles: (bytes - 84) / 50 };
       return ok(out);
+    } catch (e) { return fail(e); }
+  }
+);
+
+server.registerTool(
+  'cadgang_export_step',
+  {
+    title: 'Export the model as a STEP B-rep file',
+    description: `Write the model to a real STEP (ISO 10303) file in the cadgang repo's exports/ directory (server-side). Returns the absolute file path and byte count.
+
+This is exact B-rep output — analytic surfaces and trimmed curves — so the result reopens in Fusion, SolidWorks or OnShape as editable, fillet-able geometry, not as a faceted import.
+
+It only works when the WHOLE chain feeding this node stayed in B-rep blocks. If any field/implicit block took part, the export is refused with an explanation; export that branch as STL instead (cadgang_export_stl).
+
+Args:
+  - filename: base name without extension (e.g. 'bracket_v2')
+  - node: optional node id (defaults to output)`,
+    inputSchema: {
+      filename: z.string().regex(/^[\w.-]+$/, 'Use letters, digits, dot, dash, underscore only').describe('Output file base name'),
+      node: z.string().optional(),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ filename, node }) => {
+    try {
+      const q = new URLSearchParams({ file: filename });
+      if (node) q.set('node', node);
+      const res = await fetch(`${BASE}/api/export/step?${q}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `cadgang API error (HTTP ${res.status})`);
+      }
+      const savedTo = res.headers.get('x-saved-to');
+      const bytes = (await res.arrayBuffer()).byteLength;
+      return ok({ savedTo, bytes, format: 'STEP AP214 (exact B-rep)' });
     } catch (e) { return fail(e); }
   }
 );
