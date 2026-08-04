@@ -309,6 +309,15 @@ All six are now built, and the first thing the plan never covered has been too:
    stored yet, so a program can be written for a profile that does not exist and
    the first line someone draws is how the sketch begins.
 
+   The view is driven by hand as well: ⌘-scroll or pinch to zoom about the
+   pointer, drag the background (or space-drag, or middle-drag) to pan, FIT to
+   re-frame. A plain scroll deliberately does NOT zoom — the canvas sits inside
+   a transcript that scrolls, and one that swallowed the wheel would trap the
+   cursor on the way down the page. Once the view has been moved by hand it is
+   PINNED: automatic framing and a person holding the view are the same two
+   numbers with two owners, and the automatic one has to lose or it re-centres
+   the sketch you just zoomed into. FIT hands it back.
+
    Two things about the canvas turned out to be load-bearing and neither is
    about geometry. The tool in force and the half-finished chain live on the
    PAGE, not in the canvas, because any document change re-renders the whole

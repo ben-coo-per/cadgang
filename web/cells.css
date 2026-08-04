@@ -206,6 +206,8 @@ footer {
 }
 .sketch-tool:hover { color: var(--ink); border-color: var(--rule); }
 .sketch-tool.active { color: var(--ink); border-color: var(--ink-soft); font-weight: 600; }
+/* Fit is a view control, not a tool: pushed to the far end and never active. */
+.sketch-fit { margin-left: auto; }
 .sketch-note {
   padding: 4px var(--sp-2);
   border-top: var(--bw-hair) solid var(--rule);

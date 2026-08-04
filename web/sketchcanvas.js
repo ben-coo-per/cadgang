@@ -26,6 +26,12 @@
 const HIT = 7;        // px within which a click grabs a point, or snaps to one
 const PAD = 18;       // px of margin around the fitted sketch
 
+// How far the view may be driven. Sketches here are millimetres of real part,
+// so the range spans a 2m outline down to a 0.1mm feature filling the card.
+const MIN_SCALE = 0.05;
+const MAX_SCALE = 2000;
+const KEY_ZOOM = 1.25;
+
 const COLOURS = {
   light: { line: '#2f5d8a', point: '#1c1c1a', fixed: '#a33', hint: '#c9c8c4', text: '#6b6a66', ghost: '#8aa8c4', snap: '#3c8f5a', warn: '#a33', dim: '#9a7b3f', param: '#3c7f8f' },
   dark: { line: '#7fb3e0', point: '#e8e7e3', fixed: '#e08a8a', hint: '#3a3936', text: '#8d8c88', ghost: '#5b7d9c', snap: '#6fbd8c', warn: '#e08a8a', dim: '#d3b271', param: '#7fc0d0' },
@@ -83,6 +89,8 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
   let framed = hadView;  // whether the view has been computed against a real size
   let labels = [];       // dimension labels in screen space, for hit-testing
   let asking = null;     // the value input open over the note bar, if any
+  let panning = null;    // the last pointer position while dragging the view
+  let spaceDown = false; // space held, which turns any drag into a pan
 
   const snapRadius = () => HIT / view.scale;
 
@@ -141,6 +149,42 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
   const toSketch = (px, py) => [(px - view.ox) / view.scale, (view.oy - py) / view.scale];
 
   /**
+   * Once the view has been driven by hand, stop auto-fitting it.
+   *
+   * Automatic framing and a person holding the view are the same authority
+   * pointed at the same two numbers, and the automatic one must lose: a canvas
+   * that re-centres itself after you deliberately zoomed into a corner is
+   * fighting you. FIT is how you hand it back.
+   */
+  function pinView() {
+    ui.pinned = true;
+  }
+
+  /** Zoom about a point on screen, so what is under the pointer stays there. */
+  function zoomAt(px, py, factor) {
+    const [sx, sy] = toSketch(px, py);
+    const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, view.scale * factor));
+    if (next === view.scale) return;
+    view.scale = next;
+    view.ox = px - sx * view.scale;
+    view.oy = py + sy * view.scale;
+    pinView();
+  }
+
+  function panBy(dx, dy) {
+    view.ox += dx;
+    view.oy += dy;
+    pinView();
+  }
+
+  /** Re-frame on the whole sketch, and let it look after itself again. */
+  function fitAll() {
+    ui.pinned = false;
+    fit();
+    draw2d();
+  }
+
+  /**
    * Re-fit only when the sketch has actually left the frame, and never while a
    * gesture is half-placed.
    *
@@ -150,7 +194,7 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
    */
   function fitIfNeeded() {
     if (!framed) { fit(); return; }
-    if (stage.length) return;
+    if (ui.pinned || stage.length) return;
     const w = canvas.clientWidth, h = canvas.clientHeight;
     const b = bounds(current);
     const [left, bottom] = toScreen([b.x, b.y]);
@@ -716,6 +760,16 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
       b.onclick = () => { setTool(t.tool); canvas.focus(); };
       tools.append(b);
     }
+    // Fit is not a tool — it does not change what a click means, it puts the
+    // view back — so it sits apart from them and never takes the highlight.
+    const f = document.createElement('button');
+    f.type = 'button';
+    f.className = 'sketch-tool sketch-fit';
+    f.textContent = 'Fit';
+    f.title = 'frame the whole sketch (f) · ⌘-scroll or pinch to zoom · ' +
+      'space-drag, middle-drag, or drag the background to pan';
+    f.onclick = () => { fitAll(); canvas.focus(); };
+    tools.append(f);
   }
 
   // The panel is resizable and the card is laid out after this runs, so the
@@ -726,7 +780,9 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
     const w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w || !h || (w === boxWidth && h === boxHeight)) return;
     boxWidth = w; boxHeight = h;
-    fit();
+    // A held view survives the panel being dragged: the frame changed, but not
+    // the person's mind about where they were looking.
+    if (!ui.pinned) fit();
     draw2d();
   }).observe(canvas);
 
@@ -738,6 +794,14 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
   canvas.addEventListener('blur', () => { if (canvas.isConnected) ui.focused = false; });
   canvas.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === ' ') {
+      // Held, not pressed: space is a modifier here, and it must not scroll the
+      // transcript out from under the sketch while it is down.
+      spaceDown = true;
+      canvas.style.cursor = 'grab';
+      e.preventDefault();
+      return;
+    }
     if (e.key === 'Escape') {
       // First Escape abandons the gesture, a second one puts the tool down.
       if (stage.length) { stage = []; remember(); draw2d(); }
@@ -745,12 +809,66 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
       e.preventDefault();
       return;
     }
+    if (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_') {
+      const into = e.key === '+' || e.key === '=';
+      zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, into ? KEY_ZOOM : 1 / KEY_ZOOM);
+      draw2d();
+      e.preventDefault();
+      return;
+    }
+    if (e.key === '0' || e.key === 'f') { fitAll(); e.preventDefault(); return; }
     const t = TOOLS.find((x) => x.key === e.key.toLowerCase());
     if (t) { setTool(t.tool); e.preventDefault(); }
   });
 
+  canvas.addEventListener('keyup', (e) => {
+    if (e.key !== ' ') return;
+    spaceDown = false;
+    if (!panning) paintTools(); // restores the tool's own cursor
+  });
+
+  /**
+   * Zoom on pinch, and on ⌘/ctrl-scroll — but never on a plain scroll.
+   *
+   * This canvas sits inside a stack that scrolls, and a plain two-finger scroll
+   * over it has to keep scrolling the page. A canvas that swallowed it would
+   * trap the cursor: you would reach a sketch on the way down the transcript
+   * and the document would stop moving. macOS reports a pinch as a wheel event
+   * with ctrlKey set, so the gesture people expect arrives on the same path.
+   */
+  canvas.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    zoomAt(e.clientX - rect.left, e.clientY - rect.top, Math.exp(-e.deltaY * 0.01));
+    draw2d();
+  }, { passive: false });
+
+  canvas.addEventListener('contextmenu', (e) => {
+    if (panning) e.preventDefault();
+  });
+
   canvas.addEventListener('pointerdown', (e) => {
     canvas.focus();
+
+    // Panning, in order of how deliberate the gesture is: the middle button and
+    // space-drag work under every tool, and in DRAG mode a press on empty space
+    // pans too — there is nothing else for it to mean, and it is the one people
+    // try first.
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const emptyInSelect = tool === 'select' && e.button === 0 && nearestPoint(px, py) < 0;
+    if (e.button === 1 || spaceDown || emptyInSelect) {
+      panning = { x: e.clientX, y: e.clientY };
+      canvas.setPointerCapture?.(e.pointerId);
+      canvas.style.cursor = 'grabbing';
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (e.button !== 0) return;
+
     if (tool !== 'select') {
       if (busy) return;
       e.preventDefault();
@@ -758,8 +876,7 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
       place(at(e));
       return;
     }
-    const rect = canvas.getBoundingClientRect();
-    const i = nearestPoint(e.clientX - rect.left, e.clientY - rect.top);
+    const i = nearestPoint(px, py);
     if (i < 0) return;
     dragging = { point: i };
     canvas.setPointerCapture?.(e.pointerId);
@@ -768,6 +885,12 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
   });
 
   canvas.addEventListener('pointermove', (e) => {
+    if (panning) {
+      panBy(e.clientX - panning.x, e.clientY - panning.y);
+      panning = { x: e.clientX, y: e.clientY };
+      draw2d();
+      return;
+    }
     if (tool !== 'select') {
       pointer = at(e);
       draw2d();
@@ -785,6 +908,11 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
   });
 
   const release = async () => {
+    if (panning) {
+      panning = null;
+      canvas.style.cursor = spaceDown ? 'grab' : (tool === 'select' ? 'default' : 'crosshair');
+      return;
+    }
     if (!dragging) return;
     dragging = null;
     draw2d();
@@ -817,7 +945,7 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
       fitIfNeeded();
       draw2d();
     },
-    redraw() { fit(); draw2d(); },
+    redraw() { if (!ui.pinned) fit(); draw2d(); },
   };
 }
 
