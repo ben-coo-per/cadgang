@@ -50,6 +50,10 @@ app.use('/api', (req, res, next) => {
 app.use('/api/cells', cellsRouter(cells, ROOT));
 app.use('/api', apiRouter(doc, ROOT, broadcast));
 
+// The v2 cell transcript is its own page rather than a mode inside the node
+// editor — the two documents share a server and nothing else.
+app.get('/cells', (req, res) => res.sendFile(path.join(ROOT, 'web', 'cells.html')));
+
 // Static assets revalidate rather than sit in the cache for days, so a deploy takes effect
 // on the next load instead of whenever the proxy's default lifetime happens to expire.
 app.use(express.static(path.join(ROOT, 'web'), {

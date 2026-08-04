@@ -166,6 +166,34 @@ test('a broken cell fails the request with the cell named', async () => {
   await api('/bust', { method: 'DELETE' });
 });
 
+test('a broken tail cell does not blank the viewport', async () => {
+  await api('/', {
+    method: 'POST',
+    body: { id: 'tail', code: 'export default () => { throw new Error("still drafting"); };' },
+  });
+
+  // The viewport falls back to the deepest cell that built, and says which.
+  const mesh = await api('/mesh');
+  assert.equal(mesh.status, 200);
+  assert.equal(mesh.data.cell, 'round');
+  assert.equal(mesh.data.requested, 'tail');
+  assert.equal(mesh.data.partial, true);
+  assert.ok(mesh.data.positions.length > 0);
+
+  // The numbers follow the same fallback rather than going blank.
+  const ev = await api('/evaluate?stopOnError=0');
+  assert.equal(ev.data.shown, 'round');
+  assert.ok(ev.data.measures.volume > 0);
+
+  // An export must NOT: shipping a partial model as the model is a worse
+  // failure than refusing.
+  const step = await api('/export/step?cell=tail');
+  assert.equal(step.status, 400);
+  assert.match(step.data.error, /still drafting/);
+
+  await api('/tail', { method: 'DELETE' });
+});
+
 test('geometry comes out as triangles, STEP, and a PNG', async () => {
   const mesh = await api('/mesh');
   assert.ok(mesh.data.exact);

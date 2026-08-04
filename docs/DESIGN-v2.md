@@ -193,6 +193,10 @@ src/core/cells.js     cell document model, dirty tracking, evaluation order
 4. **Sketch cells + solver + canvas.**
 5. **Assertions + the verification loop.**
 6. **UI.** Cell stack replaces the node editor; graph becomes a derived view.
+   *Transcript built* — `web/cells.html` at `/cells`: prompts in order, status
+   badges, scrubbable params, per-cell errors and logs, and the exact solid with
+   its real edges. It is a second page rather than a mode inside the v1 editor.
+   Still missing: pick mode, and the derived dependency graph view.
 
 Phases 1 and 2 are the ones that prove the thesis. If queries hold up under
 parameter change, the rest is construction.

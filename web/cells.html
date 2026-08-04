@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>cadgang · cells</title>
+  <link rel="stylesheet" href="cwandt.css" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="cells.css" />
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.js" } }
+  </script>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="logo">CW&amp;T&nbsp;·&nbsp;CADGANG</div>
+      <span class="proj-sep">/</span>
+      <span class="project-name" title="The v2 cell stack">cells</span>
+    </div>
+    <div class="toolbar">
+      <a href="/" class="ghost linkbtn" title="Back to the v1 node graph">Graph</a>
+      <span class="sep"></span>
+      <button id="undoBtn" class="ghost" title="Undo (⌘Z)">Undo</button>
+      <button id="redoBtn" class="ghost" title="Redo (⇧⌘Z)">Redo</button>
+      <span class="sep"></span>
+      <button id="themeToggle" class="ghost" title="Toggle light / dark">DARK</button>
+      <span id="status" class="status"></span>
+      <span class="version"><span class="idcode">CWT_SW_CADGANG_CELLS</span> <span class="idver" id="version"></span></span>
+    </div>
+  </header>
+
+  <main>
+    <aside id="panel">
+      <div id="stackHead">
+        <span class="stack-label">CELL STACK</span>
+        <span id="stackCount" class="stack-count"></span>
+      </div>
+      <div id="stack"></div>
+      <div class="stack-hint">
+        Cells are authored by Claude Code over MCP. Here you read the prompts,
+        turn the knobs, and watch the assertions.
+      </div>
+    </aside>
+    <div id="dragbar" title="Drag to resize"></div>
+    <div id="viewport"></div>
+  </main>
+
+  <footer>
+    <div id="measures"></div>
+    <div id="stats"></div>
+  </footer>
+
+  <script type="module" src="cells.js"></script>
+</body>
+</html>

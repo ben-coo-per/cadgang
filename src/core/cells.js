@@ -480,6 +480,7 @@ export function evaluateCells(doc, targetId = doc.terminal, { stopOnError = true
   const results = new Map();
   const report = [];
   let previous = null;
+  let lastGood = null;
 
   for (const cell of order) {
     const index = doc.indexOf(cell.id);
@@ -513,6 +514,7 @@ export function evaluateCells(doc, targetId = doc.terminal, { stopOnError = true
       entry.logs = compiled.logs.map((l) => ({ ...l }));
       results.set(cell.id, checkCellResult(value, cell.id));
       previous = results.get(cell.id);
+      lastGood = cell.id;
     } catch (err) {
       entry.status = 'error';
       entry.error = err.message;
@@ -522,5 +524,16 @@ export function evaluateCells(doc, targetId = doc.terminal, { stopOnError = true
     }
   }
 
-  return { value: results.get(targetId) ?? null, results, report, target: targetId };
+  return {
+    value: results.get(targetId) ?? null,
+    results,
+    report,
+    target: targetId,
+    // The deepest cell that actually produced a shape. When the newest cell is
+    // broken — the normal state mid-edit — this is what the viewport should
+    // still be showing, rather than going blank and hiding the four cells that
+    // worked. Exports deliberately do not use it: shipping a partial model as
+    // if it were the model is a different kind of wrong.
+    lastGood,
+  };
 }

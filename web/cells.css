@@ -1,0 +1,152 @@
+/* cadgang v2 — the cell transcript.
+   Reads top to bottom like a document, because that is what a cell stack is.
+   Tokens come from cwandt.css; style.css supplies header/footer/button base. */
+
+main { display: flex; flex: 1 1 auto; min-height: 0; }
+
+#panel {
+  flex: 0 0 460px; min-width: 300px; max-width: 70vw;
+  display: flex; flex-direction: column;
+  border-right: var(--bw-hair) solid var(--rule);
+  background: var(--paper); min-height: 0;
+}
+
+#dragbar {
+  flex: 0 0 5px; cursor: col-resize; background: var(--paper-2);
+  border-right: var(--bw-hair) solid var(--rule);
+}
+#dragbar:hover { background: var(--rule); }
+
+#viewport { flex: 1 1 auto; position: relative; min-width: 0; }
+#viewport canvas { display: block; }
+
+#stackHead {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: var(--bw-hair) solid var(--rule);
+  flex: 0 0 auto;
+}
+.stack-label {
+  font-size: var(--fs-12); letter-spacing: var(--ls-label);
+  text-transform: uppercase; color: var(--ink-faint); font-weight: 700;
+}
+.stack-count { font-size: var(--fs-12); color: var(--ink-faint); }
+
+#stack { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+
+.stack-hint {
+  flex: 0 0 auto; padding: var(--sp-2) var(--sp-3);
+  border-top: var(--bw-hair) solid var(--rule);
+  font-size: var(--fs-12); color: var(--ink-faint); line-height: 1.5;
+}
+
+.empty { padding: var(--sp-4) var(--sp-3); color: var(--ink-faint); font-size: var(--fs-14); line-height: 1.6; }
+.empty code { color: var(--ink-soft); }
+
+/* ------------------------------------------------------------------ a cell */
+
+.cell {
+  border-bottom: var(--bw-hair) solid var(--rule);
+  padding: var(--sp-3);
+  transition: background var(--dur-fast) var(--ease);
+}
+.cell.selected { background: var(--paper-2); }
+.cell.failed { background: color-mix(in srgb, var(--signal-red) 7%, transparent); }
+
+.cell-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: 6px; }
+
+.cell-index {
+  font-size: var(--fs-12); color: var(--ink-faint);
+  min-width: 1.6em; font-variant-numeric: tabular-nums;
+}
+.cell-id {
+  font-weight: 700; font-size: var(--fs-14); letter-spacing: var(--ls-label);
+  color: var(--ink); cursor: pointer;
+}
+.cell-id:hover { opacity: 0.6; }
+.cell-refs { font-size: var(--fs-12); color: var(--ink-faint); }
+.cell-ms { margin-left: auto; font-size: var(--fs-12); color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+
+/* Status is the one thing on a cell that must be readable at a glance: it is
+   how you tell a part that matches its prompt from one that has drifted. */
+.badge {
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 2px 6px; border: var(--bw-hair) solid currentColor; font-weight: 700;
+}
+.badge.ok { color: var(--ink-faint); }
+.badge.stale { color: #c98a1e; }
+.badge.diverged { color: #4a7fb5; }
+.badge.awaiting_pick { color: #8a5cb8; }
+.badge.error { color: var(--signal-red); }
+
+.cell-prompt {
+  width: 100%; background: transparent; color: var(--ink);
+  border: var(--bw-hair) solid transparent; border-radius: 0;
+  font-family: var(--font-mono); font-size: var(--fs-14); line-height: 1.5;
+  padding: 4px 6px; margin: 0 0 2px -6px; resize: none; overflow: hidden;
+}
+.cell-prompt:hover { border-color: var(--rule); }
+.cell-prompt:focus { outline: none; border-color: var(--ink); background: var(--paper); }
+.cell-prompt::placeholder { color: var(--ink-faint); font-style: italic; }
+
+/* ------------------------------------------------------------------ params */
+
+.params { display: grid; grid-template-columns: auto 1fr; gap: 4px var(--sp-2); align-items: center; margin: 8px 0 0; }
+
+/* The label is a scrubber. Sliders would need a min and a max the program
+   never declares; dragging the name needs neither and stays exact. */
+.param-name {
+  font-size: var(--fs-12); color: var(--ink-soft); letter-spacing: var(--ls-label);
+  cursor: ew-resize; user-select: none; white-space: nowrap;
+}
+.param-name:hover { color: var(--ink); }
+.param-input {
+  background: var(--paper-2); color: var(--ink);
+  border: var(--bw-hair) solid var(--rule); border-radius: 0;
+  font-family: var(--font-mono); font-size: var(--fs-12);
+  padding: 3px 6px; width: 100%; font-variant-numeric: tabular-nums;
+}
+.param-input:focus { outline: none; border-color: var(--ink); }
+
+/* ------------------------------------------------------------------ code */
+
+.cell-toggle {
+  background: none; border: none; padding: 0; margin-top: 8px;
+  font-family: var(--font-mono); font-size: var(--fs-12);
+  color: var(--ink-faint); letter-spacing: var(--ls-label);
+  text-transform: uppercase; cursor: pointer;
+}
+.cell-toggle:hover { color: var(--ink); background: none; }
+
+.cell-code {
+  margin: 6px 0 0; padding: var(--sp-2);
+  background: var(--paper-2); border: var(--bw-hair) solid var(--rule);
+  font-size: var(--fs-12); line-height: 1.45; color: var(--ink-soft);
+  overflow-x: auto; white-space: pre; max-height: 340px;
+}
+.cell-meta { font-size: 10px; color: var(--ink-faint); margin-top: 6px; letter-spacing: 0.04em; }
+
+.cell-error, .cell-log {
+  margin-top: 8px; padding: 6px 8px; font-size: var(--fs-12); line-height: 1.45;
+  border-left: 2px solid var(--signal-red); background: var(--paper-2);
+  color: var(--ink); white-space: pre-wrap; word-break: break-word;
+}
+.cell-log { border-left-color: var(--rule); color: var(--ink-soft); }
+
+/* ------------------------------------------------------------------ footer */
+
+footer {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  padding: 6px var(--sp-4); border-top: var(--bw-hair) solid var(--rule);
+  font-size: var(--fs-12); color: var(--ink-faint); flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.linkbtn {
+  display: inline-block; text-decoration: none;
+  background: var(--paper); color: var(--ink);
+  border: var(--bw-hair) solid var(--ink); padding: 10px 18px;
+}
+.linkbtn:hover { opacity: 0.7; }
+
+.status.err { color: var(--signal-red); }

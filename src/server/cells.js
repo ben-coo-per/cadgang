@@ -43,15 +43,31 @@ export function cellsRouter(doc, rootDir) {
    * Same contract as the v1 API: the shape belongs to the scope opened here and
    * is freed on the way out, so `body` must convert to plain JS — triangles, a
    * buffer, a measurement — before it returns.
+   *
+   * `partial` is for the two routes that feed the viewport. Mid-edit the newest
+   * cell is broken most of the time, and blanking the model would hide the four
+   * cells that did work — so they fall back to the deepest shape that built and
+   * say which cell that was. Everything else stays strict: introspecting or
+   * exporting a different cell than the one asked for is worse than an error.
    */
-  async function withShape(req, body) {
+  async function withShape(req, body, { partial = false } = {}) {
     const target = req.query.cell || req.body?.cell || doc.terminal;
     if (!target) throw new GraphError('The cell document is empty — add a cell first');
     await initBrep();
     const scope = beginBrepScope();
     try {
-      const run = evaluateCells(doc, target);
-      return await body({ ...run, shape: run.value });
+      const run = evaluateCells(doc, target, { stopOnError: !partial });
+      const shown = run.value ? target : partial ? run.lastGood : null;
+      if (!shown) {
+        const failed = run.report.find((c) => c.status !== 'ok');
+        throw new GraphError(failed?.error || `Cell '${target}' produced no geometry`);
+      }
+      return await body({
+        ...run,
+        shape: run.value ?? run.results.get(run.lastGood),
+        shown,
+        partial: shown !== target,
+      });
     } finally {
       scope.dispose();
     }
@@ -124,12 +140,16 @@ export function cellsRouter(doc, rootDir) {
       try {
         const stopOnError = req.query.stopOnError !== '0';
         const run = evaluateCells(doc, target, { stopOnError });
+        // Measures follow the same fallback as the viewport: a broken tail cell
+        // should not also blank the numbers for the part that did build.
+        const shape = run.value ?? run.results.get(run.lastGood) ?? null;
         res.json({
           target: run.target,
+          shown: run.value ? run.target : run.lastGood,
           revision: doc.revision,
           order: evaluationOrder(doc, target).map((c) => c.id),
           cells: run.report,
-          measures: run.value ? measuresOf(run.value) : null,
+          measures: shape ? measuresOf(shape) : null,
         });
       } finally {
         scope.dispose();
@@ -191,11 +211,13 @@ export function cellsRouter(doc, rootDir) {
   /** Triangles for the viewport, tessellated from the real surfaces. */
   r.get('/mesh', async (req, res) => {
     try {
-      await withShape(req, ({ shape, target }) => {
+      await withShape(req, ({ shape, target, shown, partial }) => {
         const t = tessellate(shape, { tolerance: tolerance(req) });
         const bounds = meshingBounds(brepBBox(shape));
         res.json({
-          cell: target,
+          cell: shown,
+          requested: target,
+          partial,
           revision: doc.revision,
           exact: true,
           positions: Array.from(t.positions),
@@ -205,7 +227,7 @@ export function cellsRouter(doc, rootDir) {
           edges: tessellateEdges(shape, { tolerance: tolerance(req) }),
           stats: meshStats(t.positions, t.indices, bounds, null),
         });
-      });
+      }, { partial: true });
     } catch (e) { fail(res, e); }
   });
 
