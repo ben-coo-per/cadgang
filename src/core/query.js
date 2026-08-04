@@ -714,8 +714,11 @@ const measureOf = (d) => (d.type === 'edge' ? d.length : d.area);
  *
  * A plane's normal is the same everywhere and an edge's `direction` is already
  * null unless it is a line. A cylinder's `normalAt()` is one sample taken at
- * the parametric centre — `describeFace` says so, and `.facing()` already
- * refuses to trust it — so matching must not either. It is usually harmless,
+ * the parametric centre, which `describeFace` says out loud — so matching does
+ * not use it. (`.facing()` still does, filtering on `e.d.normal` whatever the
+ * surface kind. That is a separate open gap: there it produces a wrong ANSWER
+ * to a question someone asked, which they can see; here it would produce a
+ * silent change of which entity a stored pick means.) It is usually harmless,
  * because a rebuild reproduces the same parameterization and the sample lands
  * in the same place; the case it is not is a face re-trimmed by a boolean,
  * where the centre moves and the term changes across rebuilds that are

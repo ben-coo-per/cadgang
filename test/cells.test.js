@@ -326,8 +326,8 @@ test('a pick holds through reshaping, and says so when it cannot', () => {
  * An anchor may only record a heading it can vouch for.
  *
  * `describeFace` reports `normal` for every face, but on anything curved it is
- * one sample taken at the parametric centre — `.facing()` already says so and
- * refuses to trust it. Matching has to hold the same line, because a boolean
+ * one sample taken at the parametric centre, and it says so. Matching has to
+ * hold that line even though `.facing()` does not yet, because a boolean
  * that re-trims a cylindrical face moves that centre and changes the sample
  * across two rebuilds that are otherwise identical. Bounded noise is tolerable;
  * NON-DETERMINISTIC evidence is not, since it can rank two adjacent fillet
