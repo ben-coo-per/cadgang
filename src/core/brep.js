@@ -149,6 +149,9 @@ function kernel() {
   return rc;
 }
 
+/** The replicad namespace, for modules that build on the kernel (query.js). */
+export const brepKernel = kernel;
+
 // ------------------------------------------------------------- error mapping
 
 /**
@@ -311,6 +314,9 @@ function track(shape) {
   return shape;
 }
 
+/** Same, for the sub-shape wrappers query.js mints while enumerating topology. */
+export const trackBrepShape = track;
+
 /**
  * replicad's operations consume their operands — `a.translate(v)` frees `a` and
  * returns a new shape. A node's result can feed several parents, so every
@@ -319,6 +325,12 @@ function track(shape) {
 function borrow(shape, slot) {
   return track(requireSolid(shape, slot).clone());
 }
+
+// Re-exported so query-driven operations (ops.js) get the same operand
+// discipline and the same OCCT error translation as the ops defined here,
+// without query.js and brep.js having to import each other.
+export const borrowBrepShape = borrow;
+export const brepAttempt = attempt;
 
 /** True for the {kind:'sketch'} values sketch blocks emit. */
 export const isSketch = (v) => v?.kind === 'sketch';
