@@ -1364,23 +1364,48 @@ function attachPortDrag(port) {
   });
 }
 
+/** Resolve the wire a drop on `target` would make, or null if it makes none. */
+function pendingConnection(target) {
+  if (!target || !wireDrag) return null;
+  if (target.dataset.kind === wireDrag.kind) return null;   // in→in or out→out
+  const [outNode, inNode, slot] = wireDrag.kind === 'out'
+    ? [wireDrag.node, target.dataset.node, target.dataset.slot]
+    : [target.dataset.node, wireDrag.node, wireDrag.slot];
+  if (outNode === inNode) return null;                      // self-connection
+  const node = doc.nodes[inNode];
+  const sdef = (catalog[node.type] || { inputs: {} }).inputs[slot] || {};
+  return { outNode, inNode, slot, sdef };
+}
+
+/**
+ * Whether a block's output is the kind of thing a slot can use.
+ *
+ * A sketch has no volume, so it belongs only in slots that ask for one; and the
+ * bridge runs B-rep -> field only, so a field can never feed a 'brep' slot.
+ * Both are refused by the kernel anyway — catching them at the wire means the
+ * graph never enters a state whose only symptom is a red status bar.
+ */
+function slotAccepts(srcType, sdef) {
+  const src = (catalog[srcType] || {}).kind || 'field';
+  const want = sdef.kind || 'any';
+  return want === 'any' ? src !== 'sketch' : src === want;
+}
+
+const WANT_LABEL = { sketch: 'a sketch', brep: 'an exact B-rep solid' };
+
 function finishConnect(clientX, clientY) {
   const target = document.elementFromPoint(clientX, clientY)?.closest('.gport');
   document.getElementById('wireTemp')?.remove();
-  if (!target) return;
-  const tKind = target.dataset.kind;
-  if (tKind === wireDrag.kind) return;              // in→in or out→out: reject
-
-  let outNode, inNode, slot;
-  if (wireDrag.kind === 'out') {
-    outNode = wireDrag.node; inNode = target.dataset.node; slot = target.dataset.slot;
-  } else {
-    outNode = target.dataset.node; inNode = wireDrag.node; slot = wireDrag.slot;
-  }
-  if (outNode === inNode) return;                   // self-connection: reject
+  const link = pendingConnection(target);
+  if (!link) return;
+  const { outNode, inNode, slot, sdef } = link;
 
   const node = doc.nodes[inNode];
-  const sdef = (catalog[node.type] || { inputs: {} }).inputs[slot] || {};
+  if (!slotAccepts(doc.nodes[outNode].type, sdef)) {
+    const want = WANT_LABEL[sdef.kind] || 'a solid';
+    showErr(new Error(`'${slot}' on ${node.name || inNode} needs ${want}, not ${doc.nodes[outNode].type}`));
+    return;
+  }
   if (sdef.many) {
     const ids = inputIds(node, slot);
     if (!ids.includes(outNode)) ids.push(outNode);
@@ -1453,7 +1478,8 @@ window.addEventListener('pointermove', (e) => {
     }
     // highlight a compatible input/output port under the cursor as a drop target
     const port = document.elementFromPoint(e.clientX, e.clientY)?.closest('.gport');
-    const valid = port && port.dataset.kind !== wireDrag.kind && port.dataset.node !== wireDrag.node;
+    const link = pendingConnection(port);
+    const valid = link && slotAccepts(doc.nodes[link.outNode].type, link.sdef);
     if (wireDrag._hl && wireDrag._hl !== port) wireDrag._hl.classList.remove('drop-target');
     if (valid) { port.classList.add('drop-target'); wireDrag._hl = port; }
     else wireDrag._hl = null;
