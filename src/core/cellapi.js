@@ -81,7 +81,7 @@ const assert = Object.freeze({
  * keyed by cell id, for the cases where the flow branches and a prompt has to
  * name what it means.
  */
-export function cellApi({ params = {}, input = null, inputs = {} }) {
+export function cellApi({ params = {}, input = null, inputs = {}, selections = {} }) {
   return Object.freeze({
     p: Object.freeze({ ...params }),
     brep,
@@ -90,7 +90,30 @@ export function cellApi({ params = {}, input = null, inputs = {} }) {
     topology,
     input,
     inputs: Object.freeze({ ...inputs }),
+    sel: selectionQueries(selections, input),
   });
+}
+
+/**
+ * Turn the cell's resolved picks into ordinary queries.
+ *
+ * A pick becomes `sel.lip` — a Query like any other, so it goes straight into
+ * brep.fillet(...) and re-resolves against the shape being modified exactly the
+ * way a written query does. That is the whole reason picks are stored as a kind
+ * plus an anchor rather than as an index: "that edge" and "the vertical edges"
+ * end up as the same kind of thing, and both survive a parameter change.
+ *
+ * Selections resolve against the cell's `input`. A pick is made by clicking the
+ * geometry the cell is about to modify, so there is nothing else it could mean.
+ */
+function selectionQueries(selections, input) {
+  const out = {};
+  for (const [name, spec] of Object.entries(selections || {})) {
+    if (!spec?.anchor) continue; // unresolved; evaluation refuses before we get here
+    const root = spec.type === 'face' ? q.faces(input) : q.edges(input);
+    out[name] = root.ofKind(spec.anchor.kind).nearestTo(spec.anchor);
+  }
+  return Object.freeze(out);
 }
 
 /**

@@ -15,10 +15,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import express from 'express';
 import { GraphError } from '../core/errors.js';
-import { evaluateCells, evaluationOrder } from '../core/cells.js';
+import { evaluateCells, evaluationOrder, dependenciesOf, hasUnresolvedSelections } from '../core/cells.js';
 import { compileCell } from '../core/sandbox.js';
 import { cellApi } from '../core/cellapi.js';
-import { topology, Query } from '../core/query.js';
+import { topology, Query, enumerate, anchorFor } from '../core/query.js';
 import * as ops from '../core/ops.js';
 import { meshingBounds } from '../core/sdf.js';
 import { meshStats } from '../core/mesher.js';
@@ -99,9 +99,69 @@ export function cellsRouter(doc, rootDir) {
     try { res.json(doc.moveCell(req.params.id, req.body?.to)); } catch (e) { fail(res, e); }
   });
 
-  r.post('/:id/selections/:name', (req, res) => {
+  /**
+   * Record a pick.
+   *
+   * Whatever the client sends is transient by construction — resolved against a
+   * fresh evaluation inside this one request. What gets STORED is the entity's
+   * kind and anchor, never an index, so the pick survives the next parameter
+   * change instead of quietly sliding onto a different edge.
+   *
+   * Two ways in, because the two clients know different things:
+   *
+   *  - `index`, the enumeration index. This is what `topology` reports as `i`,
+   *    so it is the natural path for a model picking from what it read. The
+   *    tessellation ships faces in enumeration order, so the viewport can use
+   *    it for faces too — guarded by `revision`, since an index from a stale
+   *    mesh would point at the wrong face rather than fail.
+   *  - `point`, a position in space. The viewport has to use this for EDGES:
+   *    OCCT tessellates edges in a different order than it enumerates them, so
+   *    an edge index derived from the rendered wireframe would silently name
+   *    the wrong edge. A click is a point; matching on the point is honest.
+   *
+   * The pick resolves against the cell's INPUT, because a pick is a click on
+   * the geometry the cell is about to modify.
+   */
+  r.post('/:id/selections/:name', async (req, res) => {
     try {
-      res.json(doc.resolveSelection(req.params.id, req.params.name, req.body || {}));
+      const { id, name } = req.params;
+      const { type, index, point, revision } = req.body || {};
+      const cell = doc.get(id);
+      const spec = cell.selections?.[name];
+      if (!spec) throw new GraphError(`Cell '${id}' does not declare a selection named '${name}'`);
+      const wanted = type || spec.type;
+      const byIndex = Number.isInteger(index) && index >= 0;
+      const byPoint = Array.isArray(point) && point.length === 3 && point.every(Number.isFinite);
+      if (!byIndex && !byPoint) {
+        throw new GraphError('A pick needs either an enumeration index or a clicked point [x, y, z]');
+      }
+      if (byIndex && revision != null && revision !== doc.revision) {
+        throw new GraphError(
+          `That index came from revision ${revision} and the document is now at ${doc.revision}. ` +
+          'Refetch the mesh and pick again.'
+        );
+      }
+
+      await initBrep();
+      const scope = beginBrepScope();
+      try {
+        const source = pickSource(doc, id);
+        const shape = evaluateCells(doc, source).value;
+        if (!shape) throw new GraphError(`Cannot pick on '${id}': '${source}' produced no geometry`);
+
+        const list = enumerate(shape, wanted);
+        const hit = byIndex ? list[index] : nearestTo(list, point, wanted, source);
+        if (!hit) {
+          throw new GraphError(
+            `There is no ${wanted} ${index} on '${source}' — it has ${list.length}`
+          );
+        }
+        const anchor = anchorFor(hit.d, list);
+        const query = `${wanted}s.ofKind('${anchor.kind}').nearestTo(${anchor.unit.join(', ')})`;
+        res.json(doc.resolveSelection(id, name, { query, anchor }));
+      } finally {
+        scope.dispose();
+      }
     } catch (e) { fail(res, e); }
   });
 
@@ -121,6 +181,69 @@ export function cellsRouter(doc, rootDir) {
 
   r.post('/redo', (req, res) => {
     try { res.json(doc.redo()); } catch (e) { fail(res, e); }
+  });
+
+  /**
+   * Every pick still waiting on a human, with the cell to click on.
+   *
+   * One list serves both clients: the UI drops into pick mode from it, and a
+   * model that has just authored a cell needing a pick polls it to find out
+   * whether the human has answered yet.
+   */
+  function pendingPicks() {
+    const pending = [];
+    for (const cell of doc.cells) {
+      if (!hasUnresolvedSelections(cell)) continue;
+      let source = null;
+      let reason = null;
+      try {
+        source = pickSource(doc, cell.id);
+      } catch (e) {
+        reason = e.message;
+      }
+      for (const [name, spec] of Object.entries(cell.selections)) {
+        if (spec.query) continue;
+        pending.push({ cell: cell.id, name, type: spec.type, prompt: cell.prompt, source, reason });
+      }
+    }
+    return pending;
+  }
+
+  /**
+   * `?wait=<seconds>` long-polls until the pending set changes.
+   *
+   * This is what lets a modelling session interleave machine authoring with
+   * human disambiguation without either side blocking permanently: Claude
+   * declares a pick, waits here, and the request comes back the moment someone
+   * clicks — or on the timeout, so a session never hangs on a human who has
+   * wandered off.
+   */
+  r.get('/pending', (req, res) => {
+    const wait = Math.min(60, Math.max(0, parseFloat(req.query.wait ?? '0') || 0));
+    const before = JSON.stringify(pendingPicks());
+    if (!wait) {
+      return res.json({ revision: doc.revision, pending: JSON.parse(before) });
+    }
+
+    let done = false;
+    const finish = (timedOut) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      unsubscribe();
+      res.json({ revision: doc.revision, pending: pendingPicks(), timedOut });
+    };
+    const unsubscribe = doc.onChange(() => {
+      if (JSON.stringify(pendingPicks()) !== before) finish(false);
+    });
+    const timer = setTimeout(() => finish(true), wait * 1000);
+    // A client that gives up must not leave a listener on the document.
+    res.on('close', () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      unsubscribe();
+    });
   });
 
   // ---------------------------------------------------------------- evaluation
@@ -291,6 +414,47 @@ export function cellsRouter(doc, rootDir) {
   });
 
   return r;
+}
+
+/**
+ * The entity nearest a clicked point.
+ *
+ * Distance is to the entity's centre, which is precise for edges — you click
+ * within a millimetre or two of the line you mean — and is why this path is
+ * used for edges rather than faces. A tie is refused: two entities the same
+ * distance from the click means the click did not say which, and guessing here
+ * would poison the anchor that every later evaluation trusts.
+ */
+function nearestTo(list, point, type, source) {
+  if (!list.length) throw new GraphError(`'${source}' has no ${type}s to pick`);
+  const scored = list
+    .map((e) => ({ e, d: Math.hypot(...[0, 1, 2].map((k) => e.d.center[k] - point[k])) }))
+    .sort((a, b) => a.d - b.d);
+  const [best, next] = scored;
+  if (next && next.d - best.d < 1e-6) {
+    throw new GraphError(
+      `That click is equidistant from two ${type}s — zoom in and click closer to the one you mean`
+    );
+  }
+  return best.e;
+}
+
+/**
+ * The cell whose geometry a pick is made against: the picking cell's own input.
+ *
+ * You click the shape the cell is about to modify, not the shape it produces —
+ * the whole reason the cell is parked is that it cannot produce anything until
+ * the pick is made.
+ */
+function pickSource(doc, id) {
+  const [source] = dependenciesOf(doc, doc.indexOf(id));
+  if (!source) {
+    throw new GraphError(
+      `Cell '${id}' is first in the stack, so there is no geometry to pick on. ` +
+      'Selections belong on a cell that modifies an earlier one.'
+    );
+  }
+  return source;
 }
 
 /** Cheap facts about a result that a text-only client can act on. */

@@ -440,6 +440,66 @@ export class Query {
     });
   }
 
+  /**
+   * Keep the single entity that best matches a stored pick.
+   *
+   * This is what a human's "fillet *that* edge" turns into. The query in front
+   * of it says what KIND of thing was picked; this step says WHICH one, and it
+   * has to keep meaning the same edge after the part changes shape.
+   *
+   * Matching is in unit space — each entity's position as a fraction of the
+   * shape's own bounding box — so the corner of a 60mm box is still the same
+   * corner at 80mm, where an absolute centroid would be 10mm adrift. Measure
+   * and direction are compared scale-free for the same reason.
+   *
+   * Two ways it refuses rather than guesses, and both matter more than the
+   * matching itself: a best match too far from the anchor means the pick no
+   * longer describes anything on this shape, and a best match too close to the
+   * runner-up means the pick is genuinely ambiguous. Either way the answer is
+   * "ask the human again", never "operate on this instead".
+   */
+  nearestTo(anchor) {
+    if (!anchor?.kind) throw new GraphError('nearestTo() needs a stored anchor');
+    return this._add({
+      kind: 'reduce',
+      label: `nearestTo(${anchor.kind}@${(anchor.unit || []).map((n) => n.toFixed(2)).join(',')})`,
+      fn: (list, all) => {
+        const sameKind = list.filter((e) => e.d.kind === anchor.kind);
+        if (!sameKind.length) {
+          throw repick(
+            `The picked ${anchor.type} was a ${anchor.kind} and this shape has none left.`
+          );
+        }
+        // An exact hash hit means nothing moved at all — the common case on a
+        // re-render, and worth short-circuiting before any scoring.
+        const exact = sameKind.filter((e) => e.d.anchor === anchor.hash);
+        if (exact.length === 1) return exact;
+
+        // Measured over every entity of this type, exactly as anchorFor did.
+        const box = spanOf(all);
+        const scored = sameKind
+          .map((e) => ({ e, cost: anchorCost(e.d, anchor, box) }))
+          .sort((a, b) => a.cost - b.cost);
+
+        const best = scored[0];
+        if (best.cost > DRIFT_TOL) {
+          throw repick(
+            `The pick no longer matches anything on this shape (best candidate is ` +
+            `${best.cost.toFixed(2)} away, tolerance ${DRIFT_TOL}).`
+          );
+        }
+        const runnerUp = scored[1];
+        if (runnerUp && runnerUp.cost - best.cost < AMBIGUITY_GAP) {
+          throw repick(
+            `The pick is ambiguous — two ${anchor.type}s match it equally well ` +
+            `(${best.cost.toFixed(3)} vs ${runnerUp.cost.toFixed(3)}).`
+          );
+        }
+        return [best.e];
+      },
+    });
+  }
+
   /** Union of several sub-queries — "the vertical edges OR the top rim". */
   either(...builds) {
     const subs = builds.map((b) => b(new Query(this.shape, this.type, [])));
@@ -465,10 +525,17 @@ export class Query {
     return `${this.type}s.${this._chainLabel()}`;
   }
 
+  /**
+   * Reducers get the ORIGINAL enumeration as a second argument as well as the
+   * surviving candidates. `nearestTo` needs it: unit positions are only
+   * comparable when both sides measure against the same population, and by the
+   * time a reducer runs the list has usually been narrowed to one surface kind,
+   * whose bounding box is nothing like the whole shape's.
+   */
   _run(list) {
     let out = list;
     for (const step of this.steps) {
-      out = step.kind === 'filter' ? out.filter(step.fn) : step.fn(out);
+      out = step.kind === 'filter' ? out.filter(step.fn) : step.fn(out, list);
     }
     return out;
   }
@@ -542,6 +609,161 @@ function summarize(found) {
   });
   const tail = found.length > shown.length ? `, …${found.length - shown.length} more` : '';
   return `. Found: ${shown.join('; ')}${tail}`;
+}
+
+// ------------------------------------------------------------------- anchors
+
+/**
+ * How far a candidate may sit from the anchor before the pick is treated as
+ * lost, and how much better the winner must be than the runner-up.
+ *
+ * The units are the cost function below: roughly "fraction of the part's own
+ * size". 0.35 tolerates a corner moving a third of the way across the part —
+ * generous, because the alternative to re-matching is asking the human again,
+ * and asking too often is its own failure.
+ *
+ * The ambiguity gap is small — 0.015 — and that number came from measuring real
+ * parts rather than from taste. The competing candidate in practice is not some
+ * unrelated edge; it is the one 2mm away across a shell wall, and the two are
+ * separated in unit space by exactly wall/depth. A 2mm wall on a 40mm box is
+ * 0.05 apart and must resolve; on a 300mm box it is 0.007 apart and honestly
+ * cannot. Anything wider than about 0.02 made every thin-walled part unpickable,
+ * which is the failure nobody would tolerate.
+ *
+ * KNOWN LIMIT, and it is a real one: if a parameter slides a whole array of
+ * identical features along by exactly one pitch, the neighbour lands precisely
+ * on the anchor and is returned confidently. No cost ranking can catch that —
+ * the geometry genuinely does not record which hole was meant. The mitigations
+ * are elsewhere: the transcript shows what each pick resolved to, and a pick is
+ * cheap to redo.
+ */
+const DRIFT_TOL = 0.35;
+const AMBIGUITY_GAP = 0.015;
+
+/**
+ * A lost pick, flagged so callers can tell it apart from an ordinary modelling
+ * error. "Your fillet radius is too big" is something to fix in the code; "I
+ * can no longer tell which edge you meant" is something only the human can
+ * answer, and the UI has to offer a re-pick rather than a stack trace.
+ */
+function repick(message) {
+  const err = new GraphError(`${message} The pick needs to be made again.`);
+  err.repick = true;
+  return err;
+}
+
+/** Bounding span of a set of enumerated entities — the shape's own box. */
+function spanOf(list) {
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (const { d } of list) {
+    for (let k = 0; k < 3; k++) {
+      if (d.bbox.min[k] < min[k]) min[k] = d.bbox.min[k];
+      if (d.bbox.max[k] > max[k]) max[k] = d.bbox.max[k];
+    }
+  }
+  return { min, size: [0, 1, 2].map((k) => max[k] - min[k]) };
+}
+
+/**
+ * An entity's centre as a fraction of the shape's bounding box.
+ *
+ * This is the trick that makes a pick survive a parameter change: the top-right
+ * corner of a box is at (1, 1, 1) whether the box is 60mm or 80mm wide. A
+ * degenerate axis (a flat shape) collapses to the middle rather than dividing
+ * by zero.
+ */
+function unitPos(center, box) {
+  return [0, 1, 2].map((k) =>
+    box.size[k] > 1e-9 ? (center[k] - box.min[k]) / box.size[k] : 0.5
+  );
+}
+
+const measureOf = (d) => (d.type === 'edge' ? d.length : d.area);
+const headingOf = (d) => (d.type === 'edge' ? d.direction : d.normal);
+
+const diagOf = (box) => Math.hypot(...box.size) || 1;
+
+/**
+ * An entity's size as a fraction of the part's size.
+ *
+ * Raw length is the wrong thing to compare. The top rim of an 80mm box is 74mm
+ * and of a 120mm box is 114mm — the same edge, doing the same job, and reading
+ * that 54% growth as evidence the pick has drifted would break exactly the
+ * parameter changes picks are supposed to survive. Relative extent barely moves.
+ * Area is rooted first so faces and edges are on the same linear footing.
+ */
+function extentOf(d, box) {
+  const raw = measureOf(d);
+  if (!(raw > 0)) return 0;
+  return (d.type === 'edge' ? raw : Math.sqrt(raw)) / diagOf(box);
+}
+
+/**
+ * Everything needed to find this entity again on a later version of the shape.
+ *
+ * `list` must be the FULL enumeration of that type — the whole of
+ * `enumerate(shape, 'edge')`, not a filtered subset. Unit positions are
+ * fractions of that population's bounding box, and `nearestTo` measures against
+ * the same population, so narrowing it here would silently shift every anchor.
+ */
+export function anchorFor(descriptor, list) {
+  const box = spanOf(list);
+  return {
+    type: descriptor.type,
+    kind: descriptor.kind,
+    measure: measureOf(descriptor),        // absolute, for humans reading the record
+    extent: r4(extentOf(descriptor, box)), // relative, what matching actually uses
+    center: descriptor.center,
+    unit: r4v(unitPos(descriptor.center, box)),
+    heading: headingOf(descriptor),
+    hash: descriptor.anchor,
+  };
+}
+
+/**
+ * Distance from a candidate to an anchor. Lower is better; 0 is identical.
+ *
+ * Every term is scale-free, so the same tolerance works on a 10mm part and a
+ * 1000mm one. Position dominates because it is what actually distinguishes the
+ * four identical vertical edges of a box; measure and heading are corroborating
+ * evidence and are weighted as such.
+ */
+function anchorCost(d, anchor, box) {
+  const unit = unitPos(d.center, box);
+  const posCost = Math.hypot(...[0, 1, 2].map((k) => unit[k] - (anchor.unit?.[k] ?? 0.5)));
+
+  // Relative extent, and a ratio rather than a difference: a 3mm fillet growing
+  // to 4mm should read the same as a 30mm edge growing to 40mm. An anchor
+  // stored before `extent` existed falls back to no size evidence at all rather
+  // than to the raw-length comparison that used to punish honest growth.
+  const now = extentOf(d, box);
+  const then = anchor.extent;
+  const measureCost = now > 1e-9 && then > 1e-9
+    ? Math.min(1, Math.abs(Math.log(now / then)))
+    : 0;
+
+  const a = headingOf(d);
+  const b = anchor.heading;
+  const headingCost = a && b
+    ? (1 - Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2])) / 2
+    : 0;
+
+  // Position carries the weight because it is what actually tells the four
+  // identical vertical edges of a box apart. Heading is nearly free evidence —
+  // it separates edges meeting at a corner and barely moves otherwise.
+  //
+  // Size is weighted down near to nothing, and that is a measured result rather
+  // than taste. Across eleven reshapes of a filleted, shelled box, holding a
+  // pick on the top rim: weight 0.5 survived 8, weight 0.15 survived 10, and
+  // weight 0 also survived 10. Normalising an edge against the part diagonal
+  // still punishes an aspect-ratio change — a top rim tracks `w` alone while
+  // the diagonal tracks all three — so a deeper box reads as the rim shrinking.
+  // It stays non-zero only because it is the sole term that separates two
+  // entities at nearly the same place with very different extents, such as a
+  // small pocket face against the wall it sits in, which that suite never
+  // exercises. Cheap insurance at 0.15; actively harmful at 0.5.
+  return posCost + 0.15 * measureCost + 0.5 * headingCost;
 }
 
 /** Entry point handed to cell programs as `q`. */

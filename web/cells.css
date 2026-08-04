@@ -150,3 +150,23 @@ footer {
 .linkbtn:hover { opacity: 0.7; }
 
 .status.err { color: var(--signal-red); }
+
+/* ---------------------------------------------------------------- pick mode */
+
+#pickBar {
+  position: absolute; top: var(--sp-2); left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: var(--sp-2); z-index: 5;
+  padding: 8px var(--sp-3);
+  background: var(--paper); border: var(--bw-hair) solid var(--ink);
+  font-size: var(--fs-12); white-space: nowrap; max-width: 92%; overflow-x: auto;
+}
+/* `display: flex` beats the user-agent rule for [hidden], so say it explicitly
+   or an empty bar floats over the viewport whenever nothing is pending. */
+#pickBar[hidden] { display: none; }
+#pickBar b { font-weight: 700; }
+#pickBar button { padding: 4px 10px; font-size: var(--fs-12); }
+#pickBar button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Picking is a mode, and a mode you cannot see is a mode you forget you are in. */
+#viewport.picking { cursor: crosshair; }
+#viewport.picking canvas { outline: 2px solid var(--ink); outline-offset: -2px; }

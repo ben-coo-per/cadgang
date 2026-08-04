@@ -333,13 +333,30 @@ export class CellDocument {
     return cell;
   }
 
-  /** Record a user's pick for a declared selection. */
+  /**
+   * Record a user's pick for a declared selection.
+   *
+   * Two things are stored and they do different jobs. `query` is the
+   * human-readable record of what was resolved — it is what the transcript
+   * shows and what a model reads back. `anchor` is the mechanism: kind, unit
+   * position, measure and heading, which is what actually re-finds the entity
+   * on a later version of the shape. Neither is an index, because an index
+   * stops meaning anything the moment OCCT renumbers the topology.
+   */
   resolveSelection(id, name, { query, anchor = null }) {
     const cell = this.get(id);
     const spec = cell.selections?.[name];
     if (!spec) throw new GraphError(`Cell '${id}' does not declare a selection named '${name}'`);
     if (typeof query !== 'string' || !query.trim()) {
       throw new GraphError('A resolved selection needs a query expression');
+    }
+    if (!anchor?.kind) {
+      throw new GraphError('A resolved selection needs an anchor — pick through the viewport');
+    }
+    if (anchor.type !== spec.type) {
+      throw new GraphError(
+        `Selection '${name}' wants a ${spec.type}, but the pick was a ${anchor.type}`
+      );
     }
     this._pushUndo();
     cell.selections[name] = { ...spec, query, anchor, pickedAt: new Date().toISOString() };
@@ -510,13 +527,18 @@ export function evaluateCells(doc, targetId = doc.terminal, { stopOnError = true
     const started = Date.now();
     try {
       const compiled = compiledFor(cell);
-      const value = compiled.run(cellApi({ params: cell.params, input, inputs }));
+      const value = compiled.run(cellApi({
+        params: cell.params, input, inputs, selections: cell.selections,
+      }));
       entry.logs = compiled.logs.map((l) => ({ ...l }));
       results.set(cell.id, checkCellResult(value, cell.id));
       previous = results.get(cell.id);
       lastGood = cell.id;
     } catch (err) {
-      entry.status = 'error';
+      // A lost pick is not a bug in the code — it is a question only the human
+      // can answer, so it reports as awaiting_pick and the UI offers a re-pick
+      // rather than showing a modelling error nobody can act on.
+      entry.status = err.repick ? 'awaiting_pick' : 'error';
       entry.error = err.message;
       if (stopOnError) throw err instanceof GraphError ? err : new GraphError(err.message);
     } finally {

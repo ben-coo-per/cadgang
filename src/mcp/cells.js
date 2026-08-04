@@ -25,6 +25,10 @@ ARGUMENTS
   p        the current parameter values (numbers, strings, booleans only)
   input    the previous cell's solid — the running "that" ("subtract that from the body")
   inputs   results keyed by cell id, when the cell declares explicit refs
+  sel      the user's picks, as ready-made queries — sel.lip goes straight into brep.chamfer(input, sel.lip, 2).
+           Declare what you need with selections: {"lip": "edge"} and the cell parks until someone clicks
+           (cadgang_cells_await_pick). Use this only when the reference genuinely needs a human; a written
+           query is better whenever the geometry can describe itself.
   brep, q, assert, topology  as below
 
 brep — box(sx,sy,sz,{center:'xy'|'xyz'|''}) sitting on z=0 unless centered; cylinder(r,h,{center}); sphere(r);
@@ -303,6 +307,69 @@ Args:
             { type: 'text', text: `Rendered ${width}x${height} preview (yaw ${yaw}°, pitch ${pitch}°).` },
           ],
         };
+      } catch (e) { return fail(e); }
+    }
+  );
+
+  server.registerTool(
+    'cadgang_cells_await_pick',
+    {
+      title: 'Wait for the user to pick geometry',
+      description: `List the picks still waiting on a human, optionally blocking until one is made.
+
+Some references genuinely need a person: "fillet THAT edge." Declare the need when you author the cell — cadgang_cells_add with selections: {"lip": "edge"} — and the cell parks in 'awaiting_pick'. The web UI at /cells then prompts the user to click, and this tool is how you find out they have.
+
+Each pending entry names the cell, the selection, the type wanted, and 'source' — the cell whose geometry the user will be clicking on, which is the picking cell's input.
+
+What gets stored is a query plus an anchor (kind, position as a fraction of the part's bounding box, measure, heading) — never an index. So the pick survives a later parameter change, and when it genuinely cannot be re-found the cell asks to be picked again rather than operating on the wrong entity.
+
+In the cell program the pick arrives as 'sel.<name>', an ordinary query:
+  export default ({ brep, sel, input }) => brep.chamfer(input, sel.lip, 2);
+
+Args:
+  - waitSeconds: block up to this long (max 60) and return the moment a pick is made. 0 returns immediately. Returns timedOut: true if nobody picked — tell the user what you are waiting for rather than looping.`,
+      inputSchema: {
+        waitSeconds: z.number().min(0).max(60).default(0),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ waitSeconds }) => {
+      try {
+        const qs = waitSeconds ? `?wait=${waitSeconds}` : '';
+        return ok(await call(`/cells/pending${qs}`));
+      } catch (e) { return fail(e); }
+    }
+  );
+
+  server.registerTool(
+    'cadgang_cells_pick',
+    {
+      title: 'Make a pick on the user\'s behalf',
+      description: `Resolve a declared selection yourself, by naming the face or edge from cadgang_cells_topology.
+
+Prefer letting the user click — a selection exists because the reference needed a human. Use this when the topology makes the answer unambiguous, or when the user has described the entity clearly enough in words that you can identify it in the topology listing.
+
+The index is the 'i' field from cadgang_cells_topology on the SOURCE cell (the picking cell's input — cadgang_cells_await_pick reports which that is). It is resolved immediately and never stored; what gets stored is the anchor.
+
+Args:
+  - cell: the cell with the declared selection
+  - name: the selection name
+  - index: the face/edge index from topology of the source cell
+  - type: 'face' or 'edge' (defaults to what the selection declared)`,
+      inputSchema: {
+        cell: z.string(),
+        name: z.string(),
+        index: z.number().int().min(0),
+        type: z.enum(['face', 'edge']).optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ cell, name, index, type }) => {
+      try {
+        return ok(await call(
+          `/cells/${encodeURIComponent(cell)}/selections/${encodeURIComponent(name)}`,
+          { method: 'POST', body: { index, type } }
+        ));
       } catch (e) { return fail(e); }
     }
   );

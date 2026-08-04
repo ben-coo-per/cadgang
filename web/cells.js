@@ -116,14 +116,97 @@ function frame(bbox) {
   framed = true;
 }
 
+// --------------------------------------------------------------- pick mode
+
+/**
+ * Some references genuinely need a human: "fillet *that* edge."
+ *
+ * A cell declares what it needs and parks. This is the other end of that — the
+ * viewport goes into pick mode, the click is turned into a point or a face
+ * index, and the server converts it into a query plus an anchor. What the
+ * document stores is never the thing that was clicked; it is a description of
+ * it that can be re-found after the part changes.
+ */
+let pick = null;          // { cell, name, type, source }
+const raycaster = new THREE.Raycaster();
+const DRAG_SLOP = 4;      // px before a press counts as an orbit, not a click
+
+function pointerNDC(e) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  return new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
+  );
+}
+
+/** Which B-rep face owns triangle `tri`, by binary search over the ranges. */
+function faceOfTriangle(faces, tri) {
+  let lo = 0, hi = faces.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const f = faces[mid];
+    if (tri < f.first) hi = mid - 1;
+    else if (tri >= f.first + f.count) lo = mid + 1;
+    else return mid;
+  }
+  return -1;
+}
+
+/**
+ * Turn a click into a pick request.
+ *
+ * Faces go by index: the tessellation ships them in enumeration order, so the
+ * index means the same thing on both sides, and the revision stamp catches a
+ * stale mesh. Edges cannot — OCCT tessellates them in a different order than it
+ * enumerates them — so the click's position in space is sent instead and the
+ * server matches on that. Sending an edge index would name the wrong edge, and
+ * it would do it silently.
+ */
+async function doPick(e) {
+  if (!pick || !meshObj || !lastMesh) return;
+  raycaster.setFromCamera(pointerNDC(e), camera);
+  const [hit] = raycaster.intersectObject(meshObj, false);
+  if (!hit) { say('Click on the part', true); return; }
+
+  const body = pick.type === 'face'
+    ? { type: 'face', index: faceOfTriangle(lastMesh.faces || [], hit.faceIndex), revision: lastMesh.revision }
+    : { type: 'edge', point: [hit.point.x, hit.point.y, hit.point.z] };
+
+  if (pick.type === 'face' && body.index < 0) { say('That triangle has no B-rep face', true); return; }
+
+  try {
+    await api(`/${encodeURIComponent(pick.cell)}/selections/${encodeURIComponent(pick.name)}`,
+      { method: 'POST', body });
+    say(`picked ${pick.type} for ${pick.cell}.${pick.name}`);
+    pick = null;
+    await refresh();
+  } catch (err) {
+    say(err.message, true);
+  }
+}
+
+function setPick(next) {
+  pick = next;
+  viewport.classList.toggle('picking', Boolean(next));
+  renderPending();
+}
+
 let drag = null;
 viewport.addEventListener('contextmenu', (e) => e.preventDefault());
 viewport.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 && e.button !== 2) return;
+  if (e.target.closest('button')) return;
   viewport.setPointerCapture?.(e.pointerId);
-  drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+  drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey, downX: e.clientX, downY: e.clientY, click: e.button === 0 };
 });
-window.addEventListener('pointerup', () => { drag = null; });
+window.addEventListener('pointerup', (e) => {
+  // A press that barely moved is a click, not an orbit — so picking never
+  // fights with looking at the thing you are about to pick on.
+  if (drag?.click && pick && Math.hypot(e.clientX - drag.downX, e.clientY - drag.downY) < DRAG_SLOP) {
+    doPick(e);
+  }
+  drag = null;
+});
 window.addEventListener('pointermove', (e) => {
   if (!drag) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -203,6 +286,8 @@ window.addEventListener('pointermove', (e) => {
 let doc = { cells: [] };
 let report = new Map();   // cell id -> evaluation entry
 let structureSig = null;
+let lastMesh = null;      // the mesh currently in the viewport, for raycasting
+let pendingPicks = [];    // picks waiting on a human
 
 const badge = (status) => `<span class="badge ${status}">${status.replace('_', ' ')}</span>`;
 const fmt = (n) => (Math.abs(n) >= 1000 ? n.toFixed(0) : parseFloat(n.toPrecision(6)).toString());
@@ -418,6 +503,36 @@ function paintReport() {
   }
 }
 
+/**
+ * The pick prompt over the viewport.
+ *
+ * A parked cell is not an error and should not read like one — it is the model
+ * asking a question only the person looking at the part can answer. So it gets
+ * a prompt at the point of action rather than a red badge in the margin.
+ */
+function renderPending() {
+  const bar = $('#pickBar');
+  if (pick) {
+    bar.hidden = false;
+    bar.innerHTML = `<span>Click the <b>${pick.type}</b> for
+      <b>${pick.cell}.${pick.name}</b> — showing <b>${pick.source}</b></span>
+      <button class="ghost" id="pickCancel">Cancel</button>`;
+    $('#pickCancel').onclick = () => { setPick(null); refresh(); };
+    return;
+  }
+  if (!pendingPicks.length) { bar.hidden = true; bar.innerHTML = ''; return; }
+  bar.hidden = false;
+  bar.innerHTML = `<span>${pendingPicks.length} pick${pendingPicks.length === 1 ? '' : 's'} needed</span>`;
+  for (const p of pendingPicks) {
+    const btn = document.createElement('button');
+    btn.className = 'ghost';
+    btn.textContent = p.reason ? `${p.cell}.${p.name} — ${p.reason}` : `Pick ${p.name} (${p.type})`;
+    btn.disabled = Boolean(p.reason);
+    btn.onclick = () => { setPick(p); refresh(); };
+    bar.append(btn);
+  }
+}
+
 function escapeHtml(s) {
   return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
@@ -456,6 +571,16 @@ async function refresh({ structural = true } = {}) {
     report = new Map();
   }
 
+  try {
+    pendingPicks = (await api('/pending')).pending;
+    // A pick that got answered elsewhere (by Claude, or in another tab) should
+    // drop this window out of pick mode rather than leave it waiting.
+    if (pick && !pendingPicks.some((p) => p.cell === pick.cell && p.name === pick.name)) pick = null;
+  } catch {
+    pendingPicks = [];
+  }
+  renderPending();
+
   if (changed || structural) renderStack();
   else {
     paintReport();
@@ -477,7 +602,11 @@ async function refresh({ structural = true } = {}) {
   if (!doc.cells.length) { setGeometry(null); $('#stats').textContent = ''; return; }
 
   try {
-    const mesh = await api('/mesh');
+    // In pick mode the viewport must show the shape being picked ON — the
+    // cell's input — not the document's output, which cannot even build until
+    // the pick is made.
+    const mesh = await api(pick ? `/mesh?cell=${encodeURIComponent(pick.source)}` : '/mesh');
+    lastMesh = mesh;
     setGeometry(mesh);
     frame(m?.bbox);
     // When the newest cell is broken the server falls back to the deepest one
@@ -487,6 +616,7 @@ async function refresh({ structural = true } = {}) {
     $('#stats').textContent =
       `${mesh.indices.length / 3} tris · ${mesh.faces?.length ?? 0} faces · exact${showing}`;
   } catch (e) {
+    lastMesh = null;
     setGeometry(null);
     $('#stats').textContent = 'no geometry';
   }

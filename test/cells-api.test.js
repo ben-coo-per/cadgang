@@ -217,6 +217,118 @@ test('a delete that would orphan a reference is refused', async () => {
   assert.match(r.data.error, /cell\(s\) round reference it/);
 });
 
+test('a pick is made by index and stored as an anchor', async () => {
+  await api('/', {
+    method: 'POST',
+    body: {
+      id: 'nick', prompt: 'chamfer that edge', selections: { lip: 'edge' },
+      code: 'export default ({ brep, sel, input }) => brep.chamfer(input, sel.lip, 1);',
+    },
+  });
+
+  // The cell parks, and /pending tells the UI what to click and where.
+  let r = await api('/pending');
+  assert.equal(r.data.pending.length, 1);
+  assert.deepEqual(
+    { cell: r.data.pending[0].cell, name: r.data.pending[0].name, type: r.data.pending[0].type },
+    { cell: 'nick', name: 'lip', type: 'edge' }
+  );
+  const source = r.data.pending[0].source;
+  assert.equal(source, 'round', 'you pick on the shape the cell is about to modify');
+
+  // Find a linear edge on the source shape the way the viewport would.
+  const topo = await api(`/topology?cell=${source}`);
+  const index = topo.data.edges.findIndex((e) => e.kind === 'LINE');
+  assert.ok(index >= 0);
+
+  r = await api('/nick/selections/lip', { method: 'POST', body: { type: 'edge', index } });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.status, 'ok');
+  const stored = r.data.selections.lip;
+  assert.equal(stored.anchor.kind, 'LINE');
+  assert.equal(stored.anchor.unit.length, 3);
+  assert.ok(stored.query.includes('nearestTo'));
+  assert.ok(stored.pickedAt);
+  // Never an index: that is the whole point.
+  assert.equal(stored.anchor.index, undefined);
+
+  assert.equal((await api('/pending')).data.pending.length, 0);
+  assert.equal((await api('/evaluate')).data.cells.at(-1).status, 'ok');
+
+  await api('/nick', { method: 'DELETE' });
+});
+
+test('an edge is picked by the point that was clicked', async () => {
+  await api('/', {
+    method: 'POST',
+    body: {
+      id: 'clicky', selections: { lip: 'edge' },
+      code: 'export default ({ brep, sel, input }) => brep.chamfer(input, sel.lip, 1);',
+    },
+  });
+  const source = (await api('/pending')).data.pending[0].source;
+  const edges = (await api(`/topology?cell=${source}`)).data.edges;
+  const wanted = edges.find((e) => e.kind === 'LINE');
+
+  // The viewport sends where the click landed, not an index — OCCT tessellates
+  // edges in a different order than it enumerates them.
+  const r = await api('/clicky/selections/lip', {
+    method: 'POST',
+    body: { type: 'edge', point: wanted.center },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.selections.lip.anchor.kind, 'LINE');
+  assert.deepEqual(r.data.selections.lip.anchor.center, wanted.center);
+  assert.equal((await api('/evaluate')).data.cells.at(-1).status, 'ok');
+
+  await api('/clicky', { method: 'DELETE' });
+});
+
+test('a long poll returns as soon as the human picks', async () => {
+  await api('/', {
+    method: 'POST',
+    body: {
+      id: 'waity', selections: { lip: 'edge' },
+      code: 'export default ({ brep, sel, input }) => brep.chamfer(input, sel.lip, 1);',
+    },
+  });
+  const source = (await api('/pending')).data.pending[0].source;
+  const point = (await api(`/topology?cell=${source}`)).data.edges.find((e) => e.kind === 'LINE').center;
+
+  const waiting = api('/pending?wait=10');
+  const answered = await api('/waity/selections/lip', { method: 'POST', body: { type: 'edge', point } });
+  assert.equal(answered.status, 200);
+
+  const r = await waiting;
+  assert.equal(r.data.pending.length, 0);
+  assert.notEqual(r.data.timedOut, true, 'it woke on the pick, not on the clock');
+
+  await api('/waity', { method: 'DELETE' });
+});
+
+test('an out-of-range or wrongly-typed pick is refused', async () => {
+  await api('/', {
+    method: 'POST',
+    body: {
+      id: 'nick2', selections: { lip: 'edge' },
+      code: 'export default ({ brep, sel, input }) => brep.chamfer(input, sel.lip, 1);',
+    },
+  });
+  let r = await api('/nick2/selections/lip', { method: 'POST', body: { type: 'edge', index: 9999 } });
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /no edge 9999/);
+
+  r = await api('/nick2/selections/lip', { method: 'POST', body: { type: 'face', index: 0 } });
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /wants a edge, but the pick was a face/);
+
+  r = await api('/nick2/selections/nope', { method: 'POST', body: { type: 'edge', index: 0 } });
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /does not declare a selection named 'nope'/);
+
+  await api('/nick2', { method: 'DELETE' });
+});
+
 test('undo works through the API', async () => {
   const before = (await api('/document')).data.cells.length;
   await api('/', { method: 'POST', body: { id: 'scratch', code: BOX_CODE } });

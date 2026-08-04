@@ -18,7 +18,7 @@ import {
 } from '../src/core/cells.js';
 import { compileCell, transformCellSource } from '../src/core/sandbox.js';
 import { checkCellResult, brep as apiBrep } from '../src/core/cellapi.js';
-import { q } from '../src/core/query.js';
+import { q, enumerate, anchorFor, topology } from '../src/core/query.js';
 import * as ops from '../src/core/ops.js';
 import { GraphError } from '../src/core/errors.js';
 
@@ -176,16 +176,212 @@ test('a commit keeps dialled-in values but drops params the program removed', ()
   assert.deepEqual(doc.get('body').params, { w: 80, d: 40 });
 });
 
+/** Build a pick the way the server does: enumerate, take one, anchor it. */
+function pick(doc, sourceId, type, choose) {
+  return inScope(() => {
+    const shape = evaluateCells(doc, sourceId).value;
+    const list = enumerate(shape, type);
+    const hit = list[choose(list.map((e) => e.d))];
+    return { query: `${type}s.picked`, anchor: anchorFor(hit.d, list) };
+  });
+}
+
 test('a declared selection parks the cell until the user picks', () => {
   const doc = enclosure();
   doc.updateCell('round', { selections: { lip: 'edge' } });
   assert.equal(doc.get('round').status, CELL_STATUS.awaitingPick);
   assert.throws(() => evaluateCells(doc, 'round'), /waiting for a pick: lip \(edge\)/);
-  doc.resolveSelection('round', 'lip', {
-    query: "edges.linear().along('z')",
-    anchor: { center: [30, 20, 12], length: 24 },
-  });
+
+  doc.resolveSelection('round', 'lip', pick(doc, 'body', 'edge',
+    (ds) => ds.findIndex((d) => d.kind === 'LINE')));
   assert.equal(doc.get('round').status, CELL_STATUS.ok);
+});
+
+test('a pick must be the type the cell asked for', () => {
+  const doc = enclosure();
+  doc.updateCell('round', { selections: { lip: 'edge' } });
+  assert.throws(
+    () => doc.resolveSelection('round', 'lip', pick(doc, 'body', 'face', () => 0)),
+    /wants a edge, but the pick was a face/
+  );
+});
+
+test('a pick becomes an ordinary query the program can use', () => {
+  const doc = new CellDocument();
+  doc.addCell({ id: 'body', code: BOX_CODE });
+  doc.addCell({
+    id: 'spot',
+    prompt: 'chamfer that one edge',
+    selections: { lip: 'edge' },
+    code: `export const params = { c: 2 };
+      export default ({ p, brep, sel, input }) => brep.chamfer(input, sel.lip, p.c);`,
+  });
+  // The top edge running along X at +y.
+  doc.resolveSelection('spot', 'lip', pick(doc, 'body', 'edge', (ds) =>
+    ds.findIndex((d) => d.kind === 'LINE' && d.center[2] > 23 && d.center[1] > 19)));
+
+  inScope(() => {
+    const before = ops.volume(evaluateCells(doc, 'body').value);
+    const after = ops.volume(evaluateCells(doc, 'spot').value);
+    assert.ok(after < before, 'the chamfer removed material');
+    // Exactly one edge was chamfered: a box gains one face per chamfered edge.
+    assert.equal(topology(evaluateCells(doc, 'spot').value).counts.faces, 7);
+  });
+});
+
+test('a pick survives the parameter change that would break an index', () => {
+  const doc = new CellDocument();
+  doc.addCell({ id: 'body', code: BOX_CODE });
+  doc.addCell({
+    id: 'spot',
+    selections: { lip: 'edge' },
+    code: `export default ({ brep, sel, input }) => brep.chamfer(input, sel.lip, 2);`,
+  });
+  const target = (ds) =>
+    ds.findIndex((d) => d.kind === 'LINE' && d.center[2] > 23 && d.center[1] > 19);
+  doc.resolveSelection('spot', 'lip', pick(doc, 'body', 'edge', target));
+
+  const picked = () => inScope(() => {
+    const shape = evaluateCells(doc, 'body').value;
+    const list = enumerate(shape, 'edge');
+    const spec = doc.get('spot').selections.lip;
+    const found = q.edges(shape).ofKind(spec.anchor.kind).nearestTo(spec.anchor).one();
+    return { center: found.center, index: found.i, count: list.length };
+  });
+
+  const at60 = picked();
+  doc.updateCell('body', { params: { w: 80, h: 40 } });
+  const at80 = picked();
+
+  // Same edge — the top +y edge — even though it moved and the box is a
+  // different shape. This is the property an index cannot have.
+  assert.ok(at80.center[2] > 39 && at80.center[1] > 19, `moved to ${at80.center}`);
+  assert.notDeepEqual(at60.center, at80.center, 'the edge really did move');
+  inScope(() => {
+    assert.equal(topology(evaluateCells(doc, 'spot').value).counts.faces, 7);
+  });
+});
+
+/**
+ * The property the whole anchor mechanism exists for, on a shape that is not a
+ * bare primitive: hold a pick on the top rim of a filleted, shelled box while
+ * the box is reshaped underneath it.
+ *
+ * This is the test that caught the two real bugs in the matcher — unit space
+ * being measured against the kind-filtered subset instead of the whole
+ * enumeration, and honest parametric growth being scored as drift — so it is
+ * worth keeping pointed at the awkward cases rather than the easy one.
+ */
+test('a pick holds through reshaping, and says so when it cannot', () => {
+  const doc = new CellDocument();
+  doc.addCell({
+    id: 'body',
+    code: `export const params = { w: 80, d: 40, h: 24, r: 3, wall: 2 };
+      export default ({ p, brep, q }) => {
+        let s = brep.box(p.w, p.d, p.h);
+        s = brep.fillet(s, q.edges(s).linear().along('z').expect(4), p.r);
+        return brep.shell(s, q.faces(s).planar().facing('+z').expect(1), p.wall);
+      };`,
+  });
+  doc.addCell({
+    id: 'nick',
+    selections: { lip: 'edge' },
+    code: 'export default ({ brep, sel, input }) => brep.chamfer(input, sel.lip, 0.5);',
+  });
+  // The outer top rim — the long straight run at +y, at the top.
+  doc.resolveSelection('nick', 'lip', pick(doc, 'body', 'edge', (ds) => {
+    let best = -1;
+    ds.forEach((d, i) => {
+      if (d.kind !== 'LINE') return;
+      if (best < 0 || d.center[2] > ds[best].center[2] ||
+          (d.center[2] === ds[best].center[2] && d.center[1] > ds[best].center[1])) best = i;
+    });
+    return best;
+  }));
+
+  const holds = (params) => {
+    doc.updateCell('body', { params });
+    return inScope(() => {
+      const { report } = evaluateCells(doc, 'nick', { stopOnError: false });
+      return report.find((r) => r.id === 'nick').status === 'ok';
+    });
+  };
+
+  // Reshaped hard in every direction, including aspect-ratio inversions.
+  for (const params of [
+    { w: 80, d: 40, h: 24 }, { w: 120, d: 40, h: 40 }, { w: 45, d: 40, h: 60 },
+    { w: 200, d: 40, h: 15 }, { w: 80, d: 90, h: 24 }, { w: 30, d: 30, h: 30 },
+    { w: 60, d: 25, h: 100 }, { w: 500, d: 20, h: 20 }, { w: 80, d: 40, h: 200 },
+  ]) {
+    assert.ok(holds(params), `pick lost at ${JSON.stringify(params)}`);
+  }
+
+  // And the honest limit: a 2mm wall on a 300mm box puts the inner and outer
+  // rim 0.7% of the part apart, which is below what the anchor can resolve. It
+  // asks rather than guesses.
+  assert.equal(holds({ w: 300, d: 300, h: 300 }), false, 'a 0.7% separation should refuse');
+});
+
+test('a pick that no longer means anything asks for a re-pick', () => {
+  const doc = new CellDocument();
+  doc.addCell({ id: 'body', code: BOX_CODE });
+  doc.addCell({
+    id: 'spot',
+    selections: { lip: 'edge' },
+    code: `export default ({ brep, sel, input }) => brep.chamfer(input, sel.lip, 1);`,
+  });
+  doc.resolveSelection('spot', 'lip', pick(doc, 'body', 'edge',
+    (ds) => ds.findIndex((d) => d.kind === 'LINE')));
+
+  // Replace the box with a sphere: nothing linear survives, so the pick is lost.
+  doc.updateCell('body', { code: 'export default ({ brep }) => brep.sphere(30);' });
+  inScope(() => {
+    const { report } = evaluateCells(doc, 'spot', { stopOnError: false });
+    const spot = report.find((r) => r.id === 'spot');
+    assert.equal(spot.status, 'awaiting_pick', 'a lost pick is a question, not a bug');
+    assert.match(spot.error, /needs to be made again/);
+  });
+});
+
+/**
+ * Two identical features sitting closer together than the anchor can resolve.
+ *
+ * This is where re-matching genuinely cannot be trusted, and the refusal is the
+ * point: if the array's pitch had shifted by one hole, the "obvious" nearest
+ * match would be the WRONG hole, and a confident answer there is silently wrong
+ * geometry. Refusing costs a re-pick; choosing costs a wrong part.
+ */
+test('an ambiguous pick refuses rather than choosing', () => {
+  const doc = new CellDocument();
+  doc.addCell({
+    id: 'body',
+    code: `export const params = { t: 10 };
+      export default ({ p, brep }) => {
+        const plate = brep.box(100, 20, p.t, { center: 'xy' });
+        const a = brep.translate(brep.cylinder(0.4, p.t * 3), [-0.5, 0, -p.t]);
+        const b = brep.translate(brep.cylinder(0.4, p.t * 3), [0.5, 0, -p.t]);
+        return brep.subtract(plate, a, b);
+      };`,
+  });
+  doc.addCell({
+    id: 'spot',
+    selections: { rim: 'edge' },
+    code: `export default ({ brep, sel, input }) => brep.chamfer(input, sel.rim, 0.1);`,
+  });
+  // Pick the top rim of the left-hand hole.
+  doc.resolveSelection('spot', 'rim', pick(doc, 'body', 'edge', (ds) =>
+    ds.findIndex((d) => d.kind === 'CIRCLE' && d.center[0] < 0 && d.center[2] > 9)));
+
+  // Changing the thickness moves every centre, so the exact hash no longer
+  // hits and the two holes have to be told apart on position alone. They are
+  // 1mm apart on a 100mm plate — far inside the gap the matcher trusts.
+  doc.updateCell('body', { params: { t: 14 } });
+  inScope(() => {
+    const { report } = evaluateCells(doc, 'spot', { stopOnError: false });
+    const spot = report.find((r) => r.id === 'spot');
+    assert.equal(spot.status, 'awaiting_pick');
+    assert.match(spot.error, /ambiguous/);
+  });
 });
 
 test('deleting or reordering may not break a reference', () => {

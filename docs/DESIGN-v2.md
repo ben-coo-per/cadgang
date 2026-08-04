@@ -124,8 +124,25 @@ what it needs, and the flow is:
 4. The pick is stored as **a resolved query plus an anchor** — centroid, normal,
    length/area, adjacency hash — never as a raw index.
 5. On every later evaluation the query re-resolves and the anchor is checked. If
-   the match drifts past tolerance, the cell goes `stale` and asks for a re-pick
-   rather than operating on the wrong entity.
+   the match drifts past tolerance, the cell goes `awaiting_pick` and asks for a
+   re-pick rather than operating on the wrong entity.
+
+The anchor matches in **unit space** — the entity's centre as a fraction of the
+shape's own bounding box — so the top rim of an 80mm box is still the top rim at
+120mm, where an absolute centroid would be 20mm adrift. Kind must match exactly;
+heading corroborates; size is weighted down to 0.15 because normalising a length
+against the part diagonal still punishes an aspect-ratio change, and measurement
+showed the full-weight term losing picks it should have held.
+
+Two refusals, and they matter more than the matching: a best match beyond
+tolerance means the pick describes nothing on this shape, and a best match within
+0.015 of the runner-up means it is genuinely ambiguous. Both ask the human again.
+
+Known limit: if a parameter slides an array of identical features along by
+exactly one pitch, the neighbour lands on the anchor and is returned
+confidently. No cost ranking can see that — the geometry does not record which
+hole was meant — so the mitigation is the transcript showing what each pick
+resolved to.
 
 Claude issues the pick request over MCP and long-polls for the result, so a
 modeling session can interleave machine authoring with human disambiguation
@@ -190,6 +207,8 @@ src/core/cells.js     cell document model, dirty tracking, evaluation order
    `src/mcp/cells.js` (ten `cadgang_cells_*` tools). The cell document is a
    second, independent document served alongside the v1 node graph.
 3. **Selections + pick loop.** UI pick mode, anchors, stale detection.
+   *Built* — `nearestTo()` in `query.js`, pick mode in the transcript, a
+   `/pending` long poll, and `cadgang_cells_await_pick` / `cadgang_cells_pick`.
 4. **Sketch cells + solver + canvas.**
 5. **Assertions + the verification loop.**
 6. **UI.** Cell stack replaces the node editor; graph becomes a derived view.
