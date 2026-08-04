@@ -11,14 +11,20 @@ import url from 'node:url';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { ModelDocument } from '../core/document.js';
+import { CellDocument } from '../core/cells.js';
 import { apiRouter } from './api.js';
+import { cellsRouter } from './cells.js';
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 const PORT = parseInt(process.env.CADGANG_PORT || '4477', 10);
 const DOC_PATH = process.env.CADGANG_DOC || path.join(ROOT, 'data', 'document.json');
+const CELLS_PATH = process.env.CADGANG_CELLS || path.join(ROOT, 'data', 'cells.json');
 
 const doc = new ModelDocument(DOC_PATH);
+// The v2 cell stack is a second, independent document. There is no migration
+// between them by design — they share the process and the kernel, nothing else.
+const cells = new CellDocument(CELLS_PATH);
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
@@ -41,6 +47,7 @@ app.use('/api', (req, res, next) => {
   res.set('Expires', '0');
   next();
 });
+app.use('/api/cells', cellsRouter(cells, ROOT));
 app.use('/api', apiRouter(doc, ROOT, broadcast));
 
 // Static assets revalidate rather than sit in the cache for days, so a deploy takes effect
@@ -50,9 +57,10 @@ app.use(express.static(path.join(ROOT, 'web'), {
 }));
 
 doc.onChange(() => broadcast({ type: 'document_changed', revision: doc.revision }));
+cells.onChange(() => broadcast({ type: 'cells_changed', revision: cells.revision }));
 
 wss.on('connection', (ws) => {
-  ws.send(JSON.stringify({ type: 'hello', revision: doc.revision }));
+  ws.send(JSON.stringify({ type: 'hello', revision: doc.revision, cellsRevision: cells.revision }));
 });
 
 server.listen(PORT, () => {

@@ -184,10 +184,11 @@ src/core/cells.js     cell document model, dirty tracking, evaluation order
 ## Phases
 
 1. **Cell model + sandbox + API façade.** Cells compile, run, and produce shapes.
-   *Built.* `cells.js`, `sandbox.js`, `cellapi.js`. Not yet wired to the server
-   or the MCP surface — `evaluateCells` is callable but nothing calls it.
+   *Built* — `cells.js`, `sandbox.js`, `cellapi.js`.
 2. **Query layer + topology introspection.** The MCP surface that replaces vision.
-   *Query layer built* (`query.js`, `ops.js`); the introspection MCP call is not.
+   *Built* — `query.js`, `ops.js`, `src/server/cells.js` (REST at `/api/cells`),
+   `src/mcp/cells.js` (ten `cadgang_cells_*` tools). The cell document is a
+   second, independent document served alongside the v1 node graph.
 3. **Selections + pick loop.** UI pick mode, anchors, stale detection.
 4. **Sketch cells + solver + canvas.**
 5. **Assertions + the verification loop.**

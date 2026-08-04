@@ -14,6 +14,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { registerCellTools } from './cells.js';
 
 const BASE = (process.env.CADGANG_URL || 'http://localhost:4477').replace(/\/$/, '');
 
@@ -385,6 +386,10 @@ Args:
     } catch (e) { return fail(e); }
   }
 );
+
+// ------------------------------------------------------------------- v2 cells
+
+registerCellTools(server, { call, ok, fail, base: BASE });
 
 // ------------------------------------------------------------------- main
 
