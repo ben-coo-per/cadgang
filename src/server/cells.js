@@ -22,6 +22,7 @@ import { compileCell } from '../core/sandbox.js';
 import { cellApi } from '../core/cellapi.js';
 import { topology, Query, enumerate, anchorFor } from '../core/query.js';
 import { solveWithDrag } from '../core/sketch.js';
+import { drawOn, eraseEntity } from '../core/sketchdraw.js';
 import * as ops from '../core/ops.js';
 import { meshingBounds } from '../core/sdf.js';
 import { meshStats } from '../core/mesher.js';
@@ -31,6 +32,9 @@ import {
   initBrep, beginBrepScope, tessellate, tessellateEdges, exportStep,
   brepDistance, brepBBox,
 } from '../core/brep.js';
+
+/** A sketch with nothing in it yet — where drawing on an empty cell starts. */
+const emptySketch = () => ({ plane: 'XY', points: [], entities: [], constraints: [] });
 
 export function cellsRouter(doc, rootDir) {
   const r = express.Router();
@@ -148,6 +152,43 @@ export function cellsRouter(doc, rootDir) {
       const data = req.body?.sketch ?? cell.sketch;
       if (!data) throw new GraphError(`Cell '${cell.id}' has no sketch`);
       res.json(solveWithDrag(data, req.body?.move ?? null, cell.params || {}));
+    } catch (e) { fail(res, e); }
+  });
+
+  /**
+   * Draw a line, rectangle, circle, or arc into a cell's sketch.
+   *
+   * The opposite of `/solve` in the one way that matters: this one PERSISTS.
+   * A drag is sixty events that mean one edit, so it saves on release; drawing
+   * is one gesture that means one edit, so it saves here — and a mis-drawn line
+   * comes off with the same ⌘Z as everything else.
+   *
+   * A cell with no sketch yet gets an empty one, so the first line a person
+   * draws is also how a sketch begins. What their program does with it is still
+   * the program's business: nothing appears until it reads `sk.saved()`.
+   */
+  r.post('/:id/sketch/draw', (req, res) => {
+    try {
+      const cell = doc.get(req.params.id);
+      const data = req.body?.sketch ?? cell.sketch ?? emptySketch();
+      const result = drawOn(data, req.body?.op, {
+        params: cell.params || {},
+        snap: Number(req.body?.snap) || 0,
+      });
+      doc.updateCell(cell.id, { sketch: result.sketch });
+      res.json(result);
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Erase one entity from a cell's sketch, and whatever only it held up. */
+  r.post('/:id/sketch/erase', (req, res) => {
+    try {
+      const cell = doc.get(req.params.id);
+      const data = req.body?.sketch ?? cell.sketch;
+      if (!data) throw new GraphError(`Cell '${cell.id}' has no sketch`);
+      const result = eraseEntity(data, req.body?.entity, { params: cell.params || {} });
+      doc.updateCell(cell.id, { sketch: result.sketch });
+      res.json(result);
     } catch (e) { fail(res, e); }
   });
 

@@ -293,6 +293,7 @@ let structureSig = null;
 let lastMesh = null;      // the mesh currently in the viewport, for raycasting
 let pendingPicks = [];    // picks waiting on a human
 const sketches = new Map(); // cell id -> its mounted sketch canvas
+const sketchUi = new Map(); // cell id -> the drawing state that outlives a mount
 
 const badge = (status) => `<span class="badge ${status}">${status.replace('_', ' ')}</span>`;
 
@@ -357,7 +358,7 @@ function renderStack() {
         <span class="cell-ms">${entry?.ms ? `${entry.ms}ms` : ''}</span>
       </div>
       <textarea class="cell-prompt" rows="2" placeholder="no prompt">${escapeHtml(cell.prompt || '')}</textarea>
-      ${cell.sketch ? '<div class="sketch-wrap"><canvas class="sketch-canvas"></canvas><div class="sketch-note"></div></div>' : ''}
+      ${hasSketch(cell) ? '<div class="sketch-wrap"><div class="sketch-tools"></div><canvas class="sketch-canvas"></canvas><div class="sketch-note"></div></div>' : ''}
       <div class="checks"></div>
       <div class="params"></div>
       ${cell.code ? '<button class="cell-toggle">Show code</button><pre class="cell-code" hidden></pre>' : ''}
@@ -399,20 +400,38 @@ function renderStack() {
       };
     }
 
-    // A sketch cell gets its profile inline, under its own prompt. Dragging a
-    // point is the one authoring gesture this page has that Claude cannot do
-    // for you: the constraints are the model's, the pose is the human's.
+    // A sketch cell gets its profile inline, under its own prompt. This is the
+    // authoring the rest of the page does not do: the constraints are the
+    // model's, but the shape of the profile and where its corners sit are the
+    // human's, drawn here rather than described to Claude.
     const canvas = el.querySelector('.sketch-canvas');
     if (canvas) {
+      const at = (suffix) => `/${encodeURIComponent(cell.id)}${suffix}`;
+      // Drawing and erasing persist server-side, so the document is refreshed
+      // after them rather than saved — one gesture, one write, one undo step.
+      const persisted = async (body, route) => {
+        const result = await api(at(route), { method: 'POST', body });
+        await refresh({ structural: false });
+        return result;
+      };
+      // Which tool is up, and the corner a chained line is waiting on, belong to
+      // the page rather than to the canvas: any document change re-renders this
+      // whole stack, and a half-drawn profile must not be a casualty of Claude
+      // editing the cell above it.
+      if (!sketchUi.has(cell.id)) sketchUi.set(cell.id, {});
       sketches.set(cell.id, sketchCanvas({
-        sketch: cell.sketch,
+        sketch: cell.sketch || emptySketch(),
         canvas,
         note: el.querySelector('.sketch-note'),
-        solve: (body) => api(`/${encodeURIComponent(cell.id)}/sketch/solve`, { method: 'POST', body }),
+        tools: el.querySelector('.sketch-tools'),
+        ui: sketchUi.get(cell.id),
+        solve: (body) => api(at('/sketch/solve'), { method: 'POST', body }),
         save: async (sketch) => {
-          await api(`/${encodeURIComponent(cell.id)}`, { method: 'PATCH', body: { sketch } });
+          await api(at(''), { method: 'PATCH', body: { sketch } });
           await refresh({ structural: false });
         },
+        draw: (body) => persisted(body, '/sketch/draw'),
+        erase: (body) => persisted(body, '/sketch/erase'),
       }));
     }
 
@@ -483,7 +502,7 @@ function paramRow(cellId, name, value) {
 const pending = new Map();
 let inFlight = false;
 function push(cellId, name, value) {
-  pending.set(`${cellId} ${name}`, { cellId, name, value });
+  pending.set(`${cellId}\u0000${name}`, { cellId, name, value });
   drain();
 }
 async function drain() {
@@ -597,6 +616,22 @@ function renderPending() {
 function escapeHtml(s) {
   return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
+
+/**
+ * Whether this cell gets a canvas.
+ *
+ * A stored sketch obviously earns one. So does a program that READS one:
+ * `sk.saved()` is a cell saying its profile is the human's to draw, and it has
+ * to be drawable before anything has been drawn or the first line would have
+ * nowhere to go. Nothing else about the code is inspected here — this is the
+ * one thing a cell can say about itself that the UI needs to know.
+ */
+function hasSketch(cell) {
+  return Boolean(cell.sketch) || /\bsk\s*\.\s*saved\s*\(/.test(cell.code || '');
+}
+
+/** A sketch with nothing in it yet — where drawing on an empty cell starts. */
+const emptySketch = () => ({ plane: 'XY', points: [], entities: [], constraints: [] });
 
 // -------------------------------------------------------------- graph view
 

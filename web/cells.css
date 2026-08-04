@@ -183,8 +183,29 @@ footer {
 }
 .sketch-canvas {
   display: block; width: 100%; height: 190px;
-  cursor: crosshair; touch-action: none;
+  cursor: default; touch-action: none;
 }
+.sketch-canvas:focus { outline: none; }
+.sketch-canvas:focus-visible { outline: var(--bw-hair) solid var(--ink-soft); outline-offset: -1px; }
+
+/* The drawing tools. A strip of five words rather than icons: this is a
+   transcript, everything else on the card is language, and "Rect" needs no
+   legend. The active one is the only thing that changes weight, because at
+   this size a filled button would read as an alert. */
+.sketch-tools {
+  display: flex; gap: 2px;
+  padding: 3px var(--sp-2);
+  border-bottom: var(--bw-hair) solid var(--rule);
+}
+.sketch-tool {
+  padding: 1px 6px;
+  border: var(--bw-hair) solid transparent; border-radius: 2px;
+  background: none; color: var(--ink-soft);
+  font: inherit; font-size: var(--fs-12); letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.sketch-tool:hover { color: var(--ink); border-color: var(--rule); }
+.sketch-tool.active { color: var(--ink); border-color: var(--ink-soft); font-weight: 600; }
 .sketch-note {
   padding: 4px var(--sp-2);
   border-top: var(--bw-hair) solid var(--rule);

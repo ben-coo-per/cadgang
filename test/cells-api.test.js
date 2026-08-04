@@ -389,6 +389,77 @@ test('a sketch solves over HTTP without being saved', async () => {
   assert.equal(doc2.data.cells.find((c) => c.id === 'drawn').sketch.points[2].y, 11);
 });
 
+test('drawing persists, and drawing badly does not', async () => {
+  let r = await api('/', {
+    method: 'POST',
+    body: {
+      id: 'fromscratch',
+      prompt: 'extrude whatever I draw',
+      code: 'export default ({ brep, sk }) => brep.extrude(sk.saved(), 4);',
+      refs: [],
+    },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.sketch, null, 'a cell can want a sketch before it has one');
+
+  // The first line is also how a sketch begins.
+  r = await api('/fromscratch/sketch/draw', {
+    method: 'POST',
+    body: { op: { tool: 'rect', from: [0, 0], to: [30, 20] }, snap: 0.5 },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.sketch.entities.length, 4);
+  assert.ok(r.data.report.converged);
+
+  // Unlike solving, drawing IS an edit — the document has it.
+  let doc2 = await api('/document');
+  const stored = doc2.data.cells.find((c) => c.id === 'fromscratch').sketch;
+  assert.equal(stored.entities.length, 4);
+  assert.equal(stored.points.length, 4);
+
+  // A second gesture reads what the first one left, without being handed it.
+  r = await api('/fromscratch/sketch/draw', {
+    method: 'POST',
+    body: { op: { tool: 'circle', center: [15, 10], through: [15, 15] }, snap: 0.5 },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.sketch.entities.length, 5);
+
+  // And it undoes as one step, like every other edit.
+  r = await api('/undo', { method: 'POST' });
+  assert.equal(r.status, 200);
+  doc2 = await api('/document');
+  assert.equal(doc2.data.cells.find((c) => c.id === 'fromscratch').sketch.entities.length, 4);
+
+  r = await api('/fromscratch/sketch/draw', {
+    method: 'POST',
+    body: { op: { tool: 'spiral', from: [0, 0], to: [1, 1] } },
+  });
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /Unknown drawing tool/);
+});
+
+test('erasing removes an entity and what only it held up', async () => {
+  const r = await api('/fromscratch/sketch/erase', {
+    method: 'POST',
+    body: { entity: 0 },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.sketch.entities.length, 3);
+  assert.equal(
+    r.data.sketch.constraints.filter((c) => c.type === 'horizontal').length,
+    1,
+    'the constraint that spoke about it went too'
+  );
+
+  const bad = await api('/fromscratch/sketch/erase', { method: 'POST', body: { entity: 9 } });
+  assert.equal(bad.status, 400);
+
+  // These tests share one document, and this cell is deliberately left holding
+  // an open profile — leaving it in the stack would break whatever runs next.
+  assert.equal((await api('/fromscratch', { method: 'DELETE' })).status, 200);
+});
+
 test('a failing assertion refuses the export but not the viewport', async () => {
   let r = await api('/', {
     method: 'POST',

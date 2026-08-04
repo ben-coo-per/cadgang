@@ -1,0 +1,223 @@
+/**
+ * Drawing into a sketch, under test.
+ *
+ * The thing being checked is not that a line appears — it is what the gesture
+ * is understood to have MEANT: that a second line starting where the first
+ * ended shares its endpoint rather than owning a duplicate, that a nearly
+ * horizontal line becomes horizontal, that a guess which cannot hold is thrown
+ * away instead of taking the geometry down with it, and that erasing leaves
+ * nothing dangling behind it.
+ */
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { drawOn, eraseEntity } from '../src/core/sketchdraw.js';
+import { sketch, loopArea } from '../src/core/sketch.js';
+import { GraphError } from '../src/core/errors.js';
+
+const near = (a, b, tol = 1e-6) =>
+  assert.ok(Math.abs(a - b) < tol, `expected ${a} to be within ${tol} of ${b}`);
+
+const empty = () => ({ plane: 'XY', points: [], entities: [], constraints: [] });
+
+test('a drawn line becomes two points and a line', () => {
+  const { sketch: s, report } = drawOn(empty(), {
+    tool: 'line', from: [0, 0], to: [30, 21],
+  });
+  assert.equal(s.points.length, 2);
+  assert.deepEqual(s.entities, [{ type: 'line', a: 0, b: 1 }]);
+  assert.equal(s.constraints.length, 0, 'a diagonal line implies nothing');
+  assert.ok(report.converged);
+  assert.equal(report.dof, 4, 'four free coordinates, nothing pinned');
+});
+
+test('a nearly horizontal line is meant to be horizontal', () => {
+  const { sketch: s, inferred } = drawOn(empty(), {
+    tool: 'line', from: [0, 0], to: [40, 1.5], // 2.1°, inside the tolerance
+  });
+  assert.deepEqual(s.constraints, [{ type: 'horizontal', e: 0 }]);
+  assert.ok(inferred.includes('horizontal'));
+  near(s.points[1].y, s.points[0].y);
+});
+
+test('a line drawn well off an axis is left alone', () => {
+  const { sketch: s } = drawOn(empty(), {
+    tool: 'line', from: [0, 0], to: [40, 6], // 8.5°, outside it
+  });
+  assert.equal(s.constraints.length, 0);
+  near(s.points[1].y, 6);
+});
+
+test('a second line starting at the first one\'s end shares the point', () => {
+  const first = drawOn(empty(), { tool: 'line', from: [0, 0], to: [40, 0] }).sketch;
+  const { sketch: s, inferred } = drawOn(
+    first,
+    { tool: 'line', from: [40.4, 0.3], to: [40, 30] },
+    { snap: 1 }
+  );
+  assert.equal(s.points.length, 3, 'the shared corner is one point, not two');
+  assert.equal(s.entities[1].a, 1, 'the new line starts on the old line\'s end');
+  assert.ok(inferred.some((n) => n.includes('shares point 1')));
+});
+
+test('snapping is a distance, not a magnet — far clicks make new points', () => {
+  const first = drawOn(empty(), { tool: 'line', from: [0, 0], to: [40, 0] }).sketch;
+  const { sketch: s } = drawOn(
+    first,
+    { tool: 'line', from: [38, 2], to: [10, 30] },
+    { snap: 1 }
+  );
+  assert.equal(s.points.length, 4);
+});
+
+test('a point dropped on a line rides it', () => {
+  const first = drawOn(empty(), { tool: 'line', from: [0, 0], to: [40, 0] }).sketch;
+  const { sketch: s, inferred } = drawOn(
+    first,
+    { tool: 'line', from: [20, 0.4], to: [20, 25] },
+    { snap: 1 }
+  );
+  assert.ok(s.constraints.some((c) => c.type === 'pointOn' && c.e === 0));
+  assert.ok(inferred.some((n) => n.includes('on line 0')));
+  near(s.points[2].y, 0, 1e-6);
+});
+
+test('a click past the end of a line does not ride its extension', () => {
+  const first = drawOn(empty(), { tool: 'line', from: [0, 0], to: [40, 0] }).sketch;
+  const { sketch: s } = drawOn(
+    first,
+    { tool: 'line', from: [46, 0.2], to: [46, 25] },
+    { snap: 1 }
+  );
+  assert.ok(!s.constraints.some((c) => c.type === 'pointOn'));
+});
+
+test('a rectangle is four lines that stay a rectangle', () => {
+  const { sketch: s, report } = drawOn(empty(), {
+    tool: 'rect', from: [0, 0], to: [60, 40],
+  });
+  assert.equal(s.points.length, 4);
+  assert.equal(s.entities.length, 4);
+  assert.equal(s.constraints.filter((c) => c.type === 'horizontal').length, 2);
+  assert.equal(s.constraints.filter((c) => c.type === 'vertical').length, 2);
+  assert.ok(report.converged);
+  const loops = sketch(s).loops();
+  assert.equal(loops.length, 1, 'and it closes');
+});
+
+test('a circle keeps its radius as a variable', () => {
+  const { sketch: s } = drawOn(empty(), {
+    tool: 'circle', center: [10, 10], through: [10, 17],
+  });
+  assert.equal(s.entities[0].type, 'circle');
+  near(s.entities[0].r, 7);
+  assert.equal(s.points.length, 1, 'the rim is not a point');
+});
+
+test('an arc pulls its second end onto the radius of the first', () => {
+  const { sketch: s, report } = drawOn(empty(), {
+    tool: 'arc', center: [0, 0], from: [10, 0], to: [0, 6], // 6 is not 10
+  });
+  assert.ok(report.converged);
+  // Measured from the solved centre, not the origin: nothing here was pinned,
+  // so the solver is free to move the centre as well as the ends.
+  const c = s.points[0];
+  const r0 = Math.hypot(s.points[1].x - c.x, s.points[1].y - c.y);
+  const r1 = Math.hypot(s.points[2].x - c.x, s.points[2].y - c.y);
+  near(r0, r1, 1e-6);
+});
+
+test('a guess that cannot hold is dropped, and the geometry survives', () => {
+  // Two points held 50 apart on a diagonal. A line between them drawn close
+  // enough to horizontal would ask them to be level as well, which they cannot
+  // be — so the horizontal goes and the line stays.
+  const s = sketch();
+  const a = s.anchor(0, 0);
+  const b = s.point(50, 1);
+  s.distanceX(a, b, 50);
+  s.distanceY(a, b, 1);
+
+  const { sketch: out, dropped, report } = drawOn(s.toJSON(), {
+    tool: 'line', from: [0, 0], to: [50, 1],
+  }, { snap: 0.5 });
+
+  assert.ok(report.converged, 'the sketch still solves');
+  assert.equal(out.entities.length, 1, 'the line is there');
+  assert.ok(dropped.includes('horizontal'), 'the guess is reported as dropped');
+  assert.ok(!out.constraints.some((c) => c.type === 'horizontal'));
+  near(out.points[1].y, 1);
+});
+
+test('a draw that breaks a working sketch refuses', () => {
+  // Three pinned points, and an arc drawn onto all three. An arc holds its two
+  // ends at one radius, and these are at 10 and 6 with nothing free to move —
+  // the one failure a draw cannot talk its way out of, since it comes from the
+  // entity's own definition rather than from a constraint that can be dropped.
+  const s = sketch();
+  s.anchor(0, 0);
+  s.anchor(10, 0);
+  s.anchor(0, 6);
+  assert.throws(
+    () => drawOn(
+      s.toJSON(),
+      { tool: 'arc', center: [0, 0], from: [10, 0], to: [0, 6] },
+      { snap: 0.5 }
+    ),
+    (e) => e instanceof GraphError && /break the sketch/.test(e.message)
+  );
+});
+
+test('degenerate gestures are mis-clicks, not geometry', () => {
+  assert.throws(() => drawOn(empty(), { tool: 'line', from: [5, 5], to: [5, 5] }, { snap: 1 }), GraphError);
+  assert.throws(() => drawOn(empty(), { tool: 'rect', from: [0, 0], to: [0, 40] }), GraphError);
+  assert.throws(() => drawOn(empty(), { tool: 'circle', center: [0, 0], through: [0, 0] }), GraphError);
+  assert.throws(() => drawOn(empty(), { tool: 'spline', from: [0, 0], to: [1, 1] }), GraphError);
+});
+
+test('erasing takes the constraints that spoke about it', () => {
+  let s = drawOn(empty(), { tool: 'rect', from: [0, 0], to: [60, 40] }).sketch;
+  s = drawOn(s, { tool: 'circle', center: [30, 20], through: [30, 28] }).sketch;
+  assert.equal(s.entities.length, 5);
+
+  const { sketch: out, report } = eraseEntity(s, 0); // the bottom line
+  assert.equal(out.entities.length, 4);
+  assert.equal(out.constraints.filter((c) => c.type === 'horizontal').length, 1);
+  assert.ok(report.converged);
+
+  // Every remaining reference still points at what it used to.
+  const circle = out.entities.find((e) => e.type === 'circle');
+  near(out.points[circle.c].x, 30);
+  near(out.points[circle.c].y, 20);
+  for (const c of out.constraints) {
+    if (c.e !== undefined) assert.ok(out.entities[c.e], `constraint names entity ${c.e}`);
+  }
+});
+
+test('erasing garbage-collects points, but never a datum', () => {
+  const s = sketch();
+  s.anchor(0, 0); // a datum nothing is drawn on
+  const drawn = drawOn(s.toJSON(), { tool: 'line', from: [10, 10], to: [40, 10] }).sketch;
+  assert.equal(drawn.points.length, 3);
+
+  const { sketch: out } = eraseEntity(drawn, 0);
+  assert.equal(out.entities.length, 0);
+  assert.deepEqual(out.points, [{ x: 0, y: 0, fixed: true }]);
+});
+
+test('erasing an entity that is not there says so', () => {
+  const s = drawOn(empty(), { tool: 'line', from: [0, 0], to: [10, 0] }).sketch;
+  assert.throws(() => eraseEntity(s, 3), GraphError);
+});
+
+test('a drawn profile is a profile — it extrudes', () => {
+  let s = drawOn(empty(), { tool: 'line', from: [0, 0], to: [40, 0.2] }, { snap: 1 }).sketch;
+  s = drawOn(s, { tool: 'line', from: [40, 0], to: [40.1, 25] }, { snap: 1 }).sketch;
+  s = drawOn(s, { tool: 'line', from: [40, 25], to: [0.2, 25] }, { snap: 1 }).sketch;
+  s = drawOn(s, { tool: 'line', from: [0, 25], to: [0, 0] }, { snap: 1 }).sketch;
+
+  assert.equal(s.points.length, 4, 'four clicks around a loop, four corners');
+  const loops = sketch(s).loops();
+  assert.equal(loops.length, 1);
+  assert.equal(loops[0].segments.length, 4);
+  assert.ok(Math.abs(loopArea(loops[0])) > 900, 'and it encloses roughly 40×25');
+});

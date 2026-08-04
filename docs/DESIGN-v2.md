@@ -152,9 +152,21 @@ without either side blocking permanently.
 
 A sketch cell holds a plane, a set of 2D entities, and a set of constraints.
 Claude authors entities and constraints from a prompt ("60×40 rectangle, 20mm
-hole centered 15mm from the left edge"); the user drags points in a canvas and
-the solver holds the constraints. Dimension values may reference cell `params`,
-so sketches are parametric like everything else.
+hole centered 15mm from the left edge"); the user draws and drags in a canvas
+and the solver holds the constraints. Dimension values may reference cell
+`params`, so sketches are parametric like everything else.
+
+Drawing is the one place the human authors geometry rather than describing it,
+and what a gesture MEANS is inferred on the server, next to the solver, rather
+than in the browser. Two rules decide everything about it. A click that lands
+on an existing point reuses that point instead of adding a coincident pair, so
+a corner two lines share is one corner and cannot be dragged apart. And every
+constraint the gesture implies — a near-level line becoming horizontal, a point
+landing on a circle becoming point-on — is provisional: if the sketch stops
+solving with it in, the guess is dropped and the geometry is kept, because the
+person asked for the line and we are the ones who asked for the horizontal. The
+only failure a draw refuses outright is one it cannot back out of, which is an
+entity's own definition failing on pinned points.
 
 The solver is ours: Levenberg–Marquardt over constraint residuals, covering
 coincident, horizontal, vertical, distance, radius, tangent, equal, parallel,
@@ -277,11 +289,29 @@ src/core/cells.js     cell document model, dirty tracking, evaluation order
 Phases 1 and 2 are the ones that prove the thesis. If queries hold up under
 parameter change, the rest is construction.
 
-All six are now built. What the plan never covered, and what the next prompt
-that needs it should add: authoring sketch geometry from the canvas (today you
-drag points that already exist), sweep alongside extrude and revolve, nested
-loops in a profile (an island inside a hole is currently cut, not kept), and
-the in-app prompt box that has always been described as "later".
+All six are now built, and the first thing the plan never covered has been too:
+
+7. **Drawing on the canvas.** Line, rectangle, circle, arc, and erase, with the
+   meaning of a gesture inferred server-side (`src/core/sketchdraw.js`,
+   `POST /:id/sketch/draw` and `/erase`) — see *Sketch cells* above for the two
+   rules that govern it. Unlike a drag, a draw PERSISTS, because a drag is sixty
+   events that mean one edit and a drawn line is one gesture that means one. A
+   cell whose code calls `sk.saved()` gets a canvas whether or not a sketch is
+   stored yet, so a program can be written for a profile that does not exist and
+   the first line someone draws is how the sketch begins.
+
+   Two things about the canvas turned out to be load-bearing and neither is
+   about geometry. The tool in force and the half-finished chain live on the
+   PAGE, not in the canvas, because any document change re-renders the whole
+   stack — including Claude editing a cell three rows up — and a re-mount must
+   not cost the corner you were about to draw from. And the view re-fits only
+   when the sketch has actually left the frame, never mid-gesture: re-fitting
+   after every line moves the corner you are aiming at out from under the
+   pointer, which is the difference between drawing a profile and chasing one.
+
+What is still not covered: sweep alongside extrude and revolve, nested loops in
+a profile (an island inside a hole is currently cut, not kept), and the in-app
+prompt box that has always been described as "later".
 
 ## Consequence of the MCP-driven choice
 

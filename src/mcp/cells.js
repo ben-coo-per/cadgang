@@ -49,7 +49,13 @@ q — q.faces(shape) / q.edges(shape), then chain filters:
 Always end a query with .expect(n). A query that matches an unexpected number of entities then fails the cell loudly instead of quietly building a different part. A query that matches nothing is always an error.
 
 sk — 2D sketches under constraint, for profiles a primitive cannot express. sk.sketch() starts an empty one;
-  sk.saved() returns the sketch stored on THIS cell (what the user drags in the canvas); sk.hasSaved() tests for it.
+  sk.saved() returns the sketch stored on THIS cell — the one the user DRAWS AND DRAGS in the canvas;
+  sk.hasSaved() tests for it. A cell whose code calls sk.saved() gets a drawing canvas in the transcript,
+  whether or not a sketch is stored yet, and the user draws lines, rectangles, circles and arcs into it there.
+  So when the profile is a shape someone should draw rather than describe — an outline, a bracket, a cam —
+  write the cell around sk.saved() with NO sketch and say so in the prompt, instead of inventing coordinates.
+  Their gestures are stored as constrained geometry (a snapped corner becomes one shared point, a near-level
+  line becomes horizontal), so the profile they draw survives the parameter changes you write.
   geometry: point(x,y,{fixed}) -> index; anchor(x,y) a pinned point (every sketch wants at least one);
     line(a,b) / circle(centrePoint, r) / arc(centre, a, b) counter-clockwise from a to b — each returns an entity index;
     rectangle(x1,y1,x2,y2) -> four already-squared lines; on('XY'|'XZ'|'YZ'|'YX'|'ZX'|'ZY') sets the plane
@@ -149,7 +155,7 @@ Args:
   - refs: cell ids this one consumes. Omit for the common case — the previous cell.
   - params: overrides for the program's declared defaults
   - selections: picks this cell needs from the user, e.g. {"lip": "edge"}; the cell parks in 'awaiting_pick' until resolved
-  - sketch: a stored 2D sketch for the user to drag, which the program reads with sk.saved(). Omit when the program builds its own sketch inline with sk.sketch() — that is the usual case.
+  - sketch: a stored 2D sketch for the user to draw on and drag, which the program reads with sk.saved(). Omit it and the canvas starts empty for them to draw into — which is the right move when the profile is theirs to shape. Omit both this and sk.saved() when the program builds its own sketch inline with sk.sketch(); that is the usual case.
   - kind: 'model' (default, builds geometry) or 'assert' (states claims about the geometry and passes it through)
   - at: insert position (default: end of the stack)
 

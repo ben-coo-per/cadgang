@@ -2,37 +2,91 @@
  * The sketch canvas — the human half of a sketch cell.
  *
  * A cell's program says what the profile MEANS; this says where it currently
- * sits. Dragging a point sends the whole sketch to the server, which pins that
- * point, re-solves, and sends the sketch back — so what you see while dragging
- * is the constraint system's answer, not a preview of it. Only the release
- * writes to the document, because a gesture is one edit, not sixty.
+ * sits, and now also what is on it. Dragging a point sends the whole sketch to
+ * the server, which pins that point, re-solves, and sends the sketch back — so
+ * what you see while dragging is the constraint system's answer, not a preview
+ * of it. Only the release writes to the document, because a gesture is one
+ * edit, not sixty.
+ *
+ * Drawing goes the same way and for the same reason: the click positions go to
+ * the server, and what comes back is a solved sketch plus a sentence about what
+ * the gesture was taken to mean. Nothing about a line, a snap, or an inferred
+ * horizontal is decided in here. The one exception is what gets HIGHLIGHTED —
+ * the ring on a point about to be shared, the entity about to be erased — which
+ * is presentation, and has to be answered before the round trip rather than
+ * after it. Where that echoes a rule the server owns (nearest point within the
+ * hit radius) it is the same rule with the same tolerance, passed along as
+ * `snap` so the two cannot drift apart.
  *
  * The solver deliberately does not run in here. It is the same module the cell
  * evaluates against, and a second copy in the browser would be a second thing
  * to keep true.
  */
 
-const HIT = 7;        // px within which a click grabs a point
+const HIT = 7;        // px within which a click grabs a point, or snaps to one
 const PAD = 18;       // px of margin around the fitted sketch
 
 const COLOURS = {
-  light: { line: '#2f5d8a', point: '#1c1c1a', fixed: '#a33', hint: '#c9c8c4', text: '#6b6a66' },
-  dark: { line: '#7fb3e0', point: '#e8e7e3', fixed: '#e08a8a', hint: '#3a3936', text: '#8d8c88' },
+  light: { line: '#2f5d8a', point: '#1c1c1a', fixed: '#a33', hint: '#c9c8c4', text: '#6b6a66', ghost: '#8aa8c4', snap: '#3c8f5a', warn: '#a33' },
+  dark: { line: '#7fb3e0', point: '#e8e7e3', fixed: '#e08a8a', hint: '#3a3936', text: '#8d8c88', ghost: '#5b7d9c', snap: '#6fbd8c', warn: '#e08a8a' },
 };
+
+/**
+ * The tools, and how many clicks each one takes.
+ *
+ * A line is two clicks and then keeps going from where it ended, because a
+ * profile is a chain and making someone re-pick the corner they just placed is
+ * how you end up with two points where there should be one.
+ */
+const TOOLS = [
+  { tool: 'select', key: 'v', label: 'Drag', hint: 'drag a point to move it' },
+  { tool: 'line', key: 'l', label: 'Line', clicks: 2, chains: true, hint: 'click each corner · Esc to stop' },
+  { tool: 'rect', key: 'r', label: 'Rect', clicks: 2, hint: 'click two opposite corners' },
+  { tool: 'circle', key: 'c', label: 'Circle', clicks: 2, hint: 'click the centre, then the rim' },
+  { tool: 'arc', key: 'a', label: 'Arc', clicks: 3, hint: 'centre, then both ends counter-clockwise' },
+  { tool: 'erase', key: 'x', label: 'Erase', clicks: 1, hint: 'click a line or circle to remove it' },
+];
+
+const spec = (tool) => TOOLS.find((t) => t.tool === tool);
 
 /**
  * Mount a canvas for one cell's sketch.
  *
- * `solve` and `save` are passed in rather than reached for, so this module
- * knows about geometry and pointers and nothing about the API.
+ * `solve`, `save`, `draw` and `erase` are passed in rather than reached for, so
+ * this module knows about geometry and pointers and nothing about the API.
  */
-export function sketchCanvas({ sketch, canvas, note, solve, save }) {
+export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save, draw, erase }) {
   const ctx = canvas.getContext('2d');
   let current = sketch;
-  let view = { scale: 1, ox: 0, oy: 0 };
+  // The view is remembered with the gesture, and for the same reason: a canvas
+  // that re-fits itself on every re-mount would move the geometry out from
+  // under the pointer whenever anything else on the page changed.
+  const hadView = Boolean(ui.view);
+  const view = ui.view || (ui.view = { scale: 1, ox: 0, oy: 0 });
   let dragging = null;
   let inFlight = false;
   let queued = null;
+
+  // The tool and the half-finished gesture live in `ui`, which belongs to the
+  // page rather than to this canvas. The stack re-renders whenever the document
+  // changes — including from another tab, or from Claude editing a cell three
+  // rows up — and a mounted canvas does not survive that. Keeping the state
+  // outside means a re-render mid-chain costs a repaint instead of the corner
+  // you were about to draw from.
+  let tool = ui.tool || 'select';
+  let stage = ui.stage || [];  // clicks already placed in the gesture under way
+  let pointer = null;    // where the pointer is now, in sketch units
+  let busy = false;      // a draw is in flight; ignore clicks until it lands
+  let said = null;       // what the last draw was understood to mean
+  let lastReport = null; // the newest solve report, so a tool change can restate it
+
+  const snapRadius = () => HIT / view.scale;
+
+  /** Hand the gesture back to the page, so the next mount can pick it up. */
+  function remember() {
+    ui.tool = tool;
+    ui.stage = stage;
+  }
 
   function fit() {
     const w = canvas.clientWidth || 320;
@@ -57,7 +111,24 @@ export function sketchCanvas({ sketch, canvas, note, solve, save }) {
   const toScreen = ([x, y]) => [x * view.scale + view.ox, -y * view.scale + view.oy];
   const toSketch = (px, py) => [(px - view.ox) / view.scale, (view.oy - py) / view.scale];
 
-  function draw() {
+  /**
+   * Re-fit only when the sketch has actually left the frame, and never while a
+   * gesture is half-placed.
+   *
+   * Re-fitting after every line is the difference between drawing a profile and
+   * chasing one: the corner you are aiming at moves out from under the pointer
+   * between the click that placed it and the click that should share it.
+   */
+  function fitIfNeeded() {
+    if (stage.length) return;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const b = bounds(current);
+    const [left, bottom] = toScreen([b.x, b.y]);
+    const [right, top] = toScreen([b.x + b.w, b.y + b.h]);
+    if (left < 0 || top < 0 || right > w || bottom > h) fit();
+  }
+
+  function draw2d() {
     const theme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
     const c = COLOURS[theme];
     const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -73,28 +144,15 @@ export function sketchCanvas({ sketch, canvas, note, solve, save }) {
     ctx.moveTo(ox, oy - 10); ctx.lineTo(ox, oy + 10);
     ctx.stroke();
 
-    ctx.strokeStyle = c.line;
-    ctx.lineWidth = 1.6;
-    for (const e of current.entities || []) {
+    const doomed = tool === 'erase' && pointer ? entityAt(pointer[0], pointer[1]) : null;
+
+    (current.entities || []).forEach((e, i) => {
+      ctx.strokeStyle = i === doomed ? c.warn : c.line;
+      ctx.lineWidth = i === doomed ? 3 : 1.6;
       ctx.beginPath();
-      if (e.type === 'line') {
-        ctx.moveTo(...toScreen(xy(current, e.a)));
-        ctx.lineTo(...toScreen(xy(current, e.b)));
-      } else if (e.type === 'circle') {
-        const [cx, cy] = toScreen(xy(current, e.c));
-        ctx.arc(cx, cy, Math.abs(e.r) * view.scale, 0, Math.PI * 2);
-      } else if (e.type === 'arc') {
-        const centre = xy(current, e.c);
-        const [cx, cy] = toScreen(centre);
-        const r = Math.hypot(xy(current, e.a)[0] - centre[0], xy(current, e.a)[1] - centre[1]);
-        // Canvas y grows downward, so a counter-clockwise sketch arc is drawn
-        // clockwise here — hence the flipped angles and the `true`.
-        const a0 = -Math.atan2(xy(current, e.a)[1] - centre[1], xy(current, e.a)[0] - centre[0]);
-        const a1 = -Math.atan2(xy(current, e.b)[1] - centre[1], xy(current, e.b)[0] - centre[0]);
-        ctx.arc(cx, cy, r * view.scale, a0, a1, true);
-      }
+      traceEntity(e);
       ctx.stroke();
-    }
+    });
 
     (current.points || []).forEach((p, i) => {
       const [px, py] = toScreen([p.x, p.y]);
@@ -107,6 +165,80 @@ export function sketchCanvas({ sketch, canvas, note, solve, save }) {
         ctx.fill();
       }
     });
+
+    if (tool !== 'select' && tool !== 'erase') drawPending(c);
+
+    // The snap ring is the promise this canvas makes before the round trip: put
+    // the click here and it will BE that point, not a new one on top of it.
+    const snapped = pointer && tool !== 'select' && tool !== 'erase'
+      ? pointAt(pointer[0], pointer[1])
+      : -1;
+    if (snapped >= 0) {
+      const [sx, sy] = toScreen([current.points[snapped].x, current.points[snapped].y]);
+      ctx.strokeStyle = c.snap;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 6.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  /** One entity's path, in screen space, ready to stroke. */
+  function traceEntity(e) {
+    if (e.type === 'line') {
+      ctx.moveTo(...toScreen(xy(current, e.a)));
+      ctx.lineTo(...toScreen(xy(current, e.b)));
+    } else if (e.type === 'circle') {
+      const [cx, cy] = toScreen(xy(current, e.c));
+      ctx.arc(cx, cy, Math.abs(e.r) * view.scale, 0, Math.PI * 2);
+    } else if (e.type === 'arc') {
+      const centre = xy(current, e.c);
+      const [cx, cy] = toScreen(centre);
+      const r = Math.hypot(xy(current, e.a)[0] - centre[0], xy(current, e.a)[1] - centre[1]);
+      // Canvas y grows downward, so a counter-clockwise sketch arc is drawn
+      // clockwise here — hence the flipped angles and the `true`.
+      const a0 = -Math.atan2(xy(current, e.a)[1] - centre[1], xy(current, e.a)[0] - centre[0]);
+      const a1 = -Math.atan2(xy(current, e.b)[1] - centre[1], xy(current, e.b)[0] - centre[0]);
+      ctx.arc(cx, cy, r * view.scale, a0, a1, true);
+    }
+  }
+
+  /** The gesture under way, drawn as it would land if the next click happened. */
+  function drawPending(c) {
+    if (!stage.length || !pointer) return;
+    ctx.save();
+    ctx.strokeStyle = c.ghost;
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    const p = stage.map(toScreen);
+    const at = toScreen(pointer);
+    if (tool === 'line') {
+      ctx.moveTo(...p[0]); ctx.lineTo(...at);
+    } else if (tool === 'rect') {
+      ctx.rect(p[0][0], p[0][1], at[0] - p[0][0], at[1] - p[0][1]);
+    } else if (tool === 'circle') {
+      ctx.arc(p[0][0], p[0][1], Math.hypot(at[0] - p[0][0], at[1] - p[0][1]), 0, Math.PI * 2);
+    } else if (tool === 'arc') {
+      if (stage.length === 1) {
+        ctx.moveTo(...p[0]); ctx.lineTo(...at);
+      } else {
+        const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]);
+        const a0 = Math.atan2(p[1][1] - p[0][1], p[1][0] - p[0][0]);
+        const a1 = Math.atan2(at[1] - p[0][1], at[0] - p[0][0]);
+        ctx.arc(p[0][0], p[0][1], r, a0, a1, true);
+      }
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // Where the clicks already landed, so a three-click arc shows its progress.
+    ctx.fillStyle = c.ghost;
+    for (const [sx, sy] of p) {
+      ctx.beginPath();
+      ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   /**
@@ -123,7 +255,7 @@ export function sketchCanvas({ sketch, canvas, note, solve, save }) {
       const result = await solve({ sketch: current, move });
       current = result.sketch;
       report(result);
-      draw();
+      draw2d();
     } catch (e) {
       report({ error: e.message });
     } finally {
@@ -134,27 +266,183 @@ export function sketchCanvas({ sketch, canvas, note, solve, save }) {
 
   function report(result) {
     if (!note) return;
-    if (result.error) { note.textContent = result.error; note.className = 'sketch-note err'; return; }
-    const r = result.report || {};
-    const bits = [`${r.dof ?? '?'} dof`];
+    if (result?.error) { note.textContent = result.error; note.className = 'sketch-note err'; return; }
+    if (result?.report) lastReport = result.report;
+    const r = lastReport || {};
+    const bits = [];
+    if (said) bits.push(said);
+    else if (tool !== 'select') bits.push(spec(tool).hint);
+    bits.push(`${r.dof ?? '?'} dof`);
     if (r.redundant) bits.push(`${r.redundant} redundant`);
-    if (result.pinned === false && dragging) bits.push('held by constraints');
+    if (result?.pinned === false && dragging) bits.push('held by constraints');
     note.textContent = bits.join(' · ');
     note.className = 'sketch-note';
   }
 
-  function nearestPoint(px, py) {
+  /** The point within the hit radius of a position — the server's rule, echoed. */
+  function pointAt(x, y) {
     let best = -1;
-    let bestD = HIT;
+    let bestD = snapRadius();
     (current.points || []).forEach((p, i) => {
-      const [sx, sy] = toScreen([p.x, p.y]);
-      const d = Math.hypot(sx - px, sy - py);
-      if (d < bestD) { bestD = d; best = i; }
+      const d = Math.hypot(p.x - x, p.y - y);
+      if (d <= bestD) { bestD = d; best = i; }
     });
     return best;
   }
 
+  /**
+   * The entity under a position, for the erase highlight.
+   *
+   * Presentation only — what actually gets erased is the index this sends, so
+   * the thing highlighted and the thing removed are the same by construction.
+   */
+  function entityAt(x, y) {
+    const tol = snapRadius() * 1.6;
+    let best = -1;
+    let bestD = tol;
+    (current.entities || []).forEach((e, i) => {
+      const d = distanceToEntity(current, e, x, y);
+      if (d !== null && d <= bestD) { bestD = d; best = i; }
+    });
+    return best;
+  }
+
+  function nearestPoint(px, py) {
+    const [x, y] = toSketch(px, py);
+    return pointAt(x, y);
+  }
+
+  const at = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    return toSketch(e.clientX - rect.left, e.clientY - rect.top);
+  };
+
+  // ------------------------------------------------------------------ gestures
+
+  async function commit(op) {
+    busy = true;
+    try {
+      const result = await draw({ sketch: current, op, snap: snapRadius() });
+      current = result.sketch;
+      const meant = [...(result.inferred || [])];
+      if (result.dropped?.length) meant.push(`${result.dropped.join(', ')} would not hold`);
+      said = meant.length ? meant.join(' · ') : null;
+      fitIfNeeded();
+      report(result);
+      draw2d();
+    } catch (e) {
+      said = null;
+      stage = [];
+      remember();
+      report({ error: e.message });
+      draw2d();
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function place(p) {
+    const s = spec(tool);
+    if (tool === 'erase') {
+      const i = entityAt(p[0], p[1]);
+      if (i < 0) return;
+      busy = true;
+      try {
+        const result = await erase({ sketch: current, entity: i });
+        current = result.sketch;
+        said = null;
+        fitIfNeeded();
+        report(result);
+        draw2d();
+      } catch (e) {
+        report({ error: e.message });
+      } finally {
+        busy = false;
+      }
+      return;
+    }
+
+    stage.push(p);
+    remember();
+    if (stage.length < s.clicks) { draw2d(); return; }
+
+    const op = tool === 'line' ? { tool: 'line', from: stage[0], to: stage[1] }
+      : tool === 'rect' ? { tool: 'rect', from: stage[0], to: stage[1] }
+      : tool === 'circle' ? { tool: 'circle', center: stage[0], through: stage[1] }
+      : { tool: 'arc', center: stage[0], from: stage[1], to: stage[2] };
+
+    // A chained tool carries on from the corner just placed, so a four-sided
+    // profile is five clicks rather than eight — and the shared corners are
+    // shared because they are literally the same click.
+    const last = stage[stage.length - 1];
+    stage = s.chains ? [last] : [];
+    remember();
+    await commit(op);
+  }
+
+  /** Show which tool is in force. Separate from choosing one, so a re-mount can
+   *  restore a gesture rather than cancelling it. */
+  function paintTools() {
+    canvas.style.cursor = tool === 'select' ? 'default' : 'crosshair';
+    if (tools) {
+      for (const b of tools.querySelectorAll('button')) {
+        b.classList.toggle('active', b.dataset.tool === tool);
+      }
+    }
+  }
+
+  function setTool(next) {
+    tool = next;
+    stage = [];
+    said = null;
+    remember();
+    paintTools();
+    report(null);
+    draw2d();
+  }
+
+  if (tools) {
+    tools.innerHTML = '';
+    for (const t of TOOLS) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'sketch-tool';
+      b.dataset.tool = t.tool;
+      b.textContent = t.label;
+      b.title = `${t.hint} (${t.key})`;
+      b.onclick = () => { setTool(t.tool); canvas.focus(); };
+      tools.append(b);
+    }
+  }
+
+  canvas.tabIndex = 0;
+  canvas.addEventListener('focus', () => { ui.focused = true; });
+  // A canvas being torn out of the page blurs on its way out. That is the
+  // re-render, not the person looking away, so it must not count as putting
+  // the keyboard down.
+  canvas.addEventListener('blur', () => { if (canvas.isConnected) ui.focused = false; });
+  canvas.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'Escape') {
+      // First Escape abandons the gesture, a second one puts the tool down.
+      if (stage.length) { stage = []; remember(); draw2d(); }
+      else setTool('select');
+      e.preventDefault();
+      return;
+    }
+    const t = TOOLS.find((x) => x.key === e.key.toLowerCase());
+    if (t) { setTool(t.tool); e.preventDefault(); }
+  });
+
   canvas.addEventListener('pointerdown', (e) => {
+    canvas.focus();
+    if (tool !== 'select') {
+      if (busy) return;
+      e.preventDefault();
+      e.stopPropagation();
+      place(at(e));
+      return;
+    }
     const rect = canvas.getBoundingClientRect();
     const i = nearestPoint(e.clientX - rect.left, e.clientY - rect.top);
     if (i < 0) return;
@@ -165,16 +453,26 @@ export function sketchCanvas({ sketch, canvas, note, solve, save }) {
   });
 
   canvas.addEventListener('pointermove', (e) => {
+    if (tool !== 'select') {
+      pointer = at(e);
+      draw2d();
+      return;
+    }
     if (!dragging) return;
-    const rect = canvas.getBoundingClientRect();
-    const [x, y] = toSketch(e.clientX - rect.left, e.clientY - rect.top);
+    const [x, y] = at(e);
     requestSolve({ point: dragging.point, x, y });
+  });
+
+  canvas.addEventListener('pointerleave', () => {
+    if (tool === 'select') return;
+    pointer = null;
+    draw2d();
   });
 
   const release = async () => {
     if (!dragging) return;
     dragging = null;
-    draw();
+    draw2d();
     try {
       await save(current);
     } catch (e) {
@@ -184,21 +482,27 @@ export function sketchCanvas({ sketch, canvas, note, solve, save }) {
   canvas.addEventListener('pointerup', release);
   canvas.addEventListener('pointercancel', release);
 
-  fit();
-  draw();
+  // Pick up wherever the last mount of this cell's canvas left off — including
+  // the keyboard, since a chain driven by shortcuts should not need re-clicking
+  // into every time the document changes underneath it.
+  if (hadView) fitIfNeeded(); else fit();
+  paintTools();
+  report(null);
+  draw2d();
+  if (ui.focused) canvas.focus();
   requestSolve(null);
 
   return {
     /** Re-solve and redraw after something outside changed — a parameter, say. */
     async refresh(next) {
-      if (dragging) return; // never yank the geometry out from under a hand
+      if (dragging || busy) return; // never yank the geometry out from under a hand
       if (next) current = next;
-      fit();
+      fitIfNeeded();
       await requestSolve(null);
-      fit();
-      draw();
+      fitIfNeeded();
+      draw2d();
     },
-    redraw() { fit(); draw(); },
+    redraw() { fit(); draw2d(); },
   };
 }
 
@@ -207,8 +511,48 @@ function xy(sketch, i) {
   return p ? [p.x, p.y] : [0, 0];
 }
 
-/** Extent of the sketch including circle and arc radii, never zero-sized. */
+/** Distance from a position to an entity, or null if it is not that kind. */
+function distanceToEntity(sketch, e, x, y) {
+  const P = (i) => sketch.points[i];
+  if (e.type === 'line') {
+    const a = P(e.a), b = P(e.b);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-12) return null;
+    const t = Math.min(1, Math.max(0, ((x - a.x) * dx + (y - a.y) * dy) / len2));
+    return Math.hypot(a.x + t * dx - x, a.y + t * dy - y);
+  }
+  if (e.type === 'circle' || e.type === 'arc') {
+    const c = P(e.c);
+    const r = e.type === 'circle'
+      ? Math.abs(e.r)
+      : Math.hypot(P(e.a).x - c.x, P(e.a).y - c.y);
+    return Math.abs(Math.hypot(x - c.x, y - c.y) - r);
+  }
+  return null;
+}
+
+/** How wide an empty sketch's canvas is, in sketch units. */
+const BLANK_SPAN = 100;
+
+/**
+ * Extent of the sketch including circle and arc radii, never zero-sized.
+ *
+ * A sketch with nothing in it yet gets a fixed span rather than a degenerate
+ * one. It is a guess, but it is the guess that makes the first rectangle
+ * someone draws land inside the view — and a view that does not have to jump
+ * after the first line is what lets the second one be aimed at the first.
+ */
 function bounds(sketch) {
+  if (!sketch.entities?.length && (sketch.points?.length ?? 0) < 2) {
+    const p = sketch.points?.[0];
+    return {
+      x: (p?.x ?? 0) - BLANK_SPAN / 2,
+      y: (p?.y ?? 0) - BLANK_SPAN / 2,
+      w: BLANK_SPAN,
+      h: BLANK_SPAN,
+    };
+  }
   let minX = 0, minY = 0, maxX = 0, maxY = 0;
   let any = false;
   const see = (x, y) => {
