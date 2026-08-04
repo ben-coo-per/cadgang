@@ -322,6 +322,45 @@ test('a pick holds through reshaping, and says so when it cannot', () => {
   assert.equal(holds({ w: 300, d: 300, h: 300 }), false, 'a 0.7% separation should refuse');
 });
 
+/**
+ * An anchor may only record a heading it can vouch for.
+ *
+ * `describeFace` reports `normal` for every face, but on anything curved it is
+ * one sample taken at the parametric centre — `.facing()` already says so and
+ * refuses to trust it. Matching has to hold the same line, because a boolean
+ * that re-trims a cylindrical face moves that centre and changes the sample
+ * across two rebuilds that are otherwise identical. Bounded noise is tolerable;
+ * NON-DETERMINISTIC evidence is not, since it can rank two adjacent fillet
+ * faces one way on some rebuilds and the other way on others.
+ */
+test('an anchor only records a heading where the heading means something', () => {
+  const doc = new CellDocument();
+  doc.addCell({
+    id: 'body',
+    code: `export const params = { w: 60, d: 40, h: 20, bore: 8 };
+      export default ({ p, brep, q }) => {
+        const s = brep.box(p.w, p.d, p.h);
+        const hole = brep.translate(brep.cylinder(p.bore / 2, p.h * 2), [0, 0, -p.h]);
+        return brep.subtract(s, hole);
+      };`,
+  });
+
+  inScope(() => {
+    const shape = evaluateCells(doc, 'body').value;
+    const list = enumerate(shape, 'face');
+    const bore = list.find((e) => e.d.kind === 'CYLINDRE');
+    const top = list.find((e) => e.d.kind === 'PLANE');
+    assert.ok(bore && top, 'the part has both a bore and a planar face');
+
+    assert.ok(bore.d.normal, 'the descriptor still REPORTS the sampled normal');
+    assert.equal(
+      anchorFor(bore.d, list).heading, null,
+      'but the anchor refuses to match on it'
+    );
+    assert.ok(anchorFor(top.d, list).heading, 'a plane\'s normal is still evidence');
+  });
+});
+
 test('a pick that no longer means anything asks for a re-pick', () => {
   const doc = new CellDocument();
   doc.addCell({ id: 'body', code: BOX_CODE });

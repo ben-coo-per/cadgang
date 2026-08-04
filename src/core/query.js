@@ -640,6 +640,33 @@ function summarize(found) {
 const DRIFT_TOL = 0.35;
 const AMBIGUITY_GAP = 0.015;
 
+/*
+ * CONSIDERED AND MEASURED DOWN, 2026-08-04: making the gap proportional to the
+ * winner's own drift, `AMBIGUITY_GAP + k * best.cost`.
+ *
+ * The argument for it is good. A flat gap is right where it was measured — best
+ * near zero, rival one wall away — and says nothing about two candidates that
+ * have BOTH drifted a third of the way across the part, where the ranking
+ * between them is mostly noise and the flat rule still answers confidently.
+ * That is the silent-wrong direction this whole design fears.
+ *
+ * The numbers refuse it at any useful strength. Costs from the eleven reshapes,
+ * best → runner-up: {120,40,40} .011→.061, {45,40,60} .083→.133,
+ * {200,40,15} .026→.076, {80,90,24} .042→.065, {30,30,30} .082→.149,
+ * {60,25,100} .085→.165, {500,20,20} .032→.132, {80,40,200} .129→.179.
+ * The binding case is {80,90,24}: a 0.023 gap over a 0.042 best caps k below
+ * 0.190, and {80,40,200} caps it below 0.271. Anything strong enough to matter
+ * at high drift (k ≈ 0.25 demands 0.09 at best = 0.30) turns a reshape that
+ * works today into a re-pick.
+ *
+ * So it stays flat. What would change that is not a better constant but a test
+ * that exhibits the failure being guarded against: a reshape where two
+ * moderately separated parallel edges both drift and today's rule confidently
+ * returns the wrong one. Without it, k would be a guess constrained only by the
+ * cases it must not break — which is the shape of the tuning this file already
+ * warns against.
+ */
+
 /**
  * A lost pick, flagged so callers can tell it apart from an ordinary modelling
  * error. "Your fillet radius is too big" is something to fix in the code; "I
@@ -680,7 +707,25 @@ function unitPos(center, box) {
 }
 
 const measureOf = (d) => (d.type === 'edge' ? d.length : d.area);
-const headingOf = (d) => (d.type === 'edge' ? d.direction : d.normal);
+
+/**
+ * The direction an entity faces, when that is a fact about the entity rather
+ * than about where it happened to be sampled.
+ *
+ * A plane's normal is the same everywhere and an edge's `direction` is already
+ * null unless it is a line. A cylinder's `normalAt()` is one sample taken at
+ * the parametric centre — `describeFace` says so, and `.facing()` already
+ * refuses to trust it — so matching must not either. It is usually harmless,
+ * because a rebuild reproduces the same parameterization and the sample lands
+ * in the same place; the case it is not is a face re-trimmed by a boolean,
+ * where the centre moves and the term changes across rebuilds that are
+ * otherwise identical. Non-deterministic evidence is the worst kind: it can
+ * flip two adjacent fillet faces on some rebuilds and not others.
+ */
+const headingOf = (d) => {
+  if (d.type === 'edge') return d.direction;
+  return d.kind === 'PLANE' ? d.normal : null;
+};
 
 const diagOf = (box) => Math.hypot(...box.size) || 1;
 
