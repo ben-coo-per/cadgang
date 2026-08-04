@@ -439,6 +439,67 @@ test('drawing persists, and drawing badly does not', async () => {
   assert.match(r.data.error, /Unknown drawing tool/);
 });
 
+test('a dimension can be a number or the name of a parameter', async () => {
+  let r = await api('/', {
+    method: 'POST',
+    body: {
+      id: 'dimmed',
+      prompt: 'a plate the user dimensions',
+      code: 'export const params = { span: 50 };\nexport default ({ brep, sk }) => brep.extrude(sk.saved(), 3);',
+      refs: [],
+    },
+  });
+  assert.equal(r.status, 200);
+  await api('/dimmed/sketch/draw', {
+    method: 'POST',
+    body: { op: { tool: 'rect', from: [0, 0], to: [37, 22] }, snap: 0.5 },
+  });
+
+  // A number: the geometry moves to it.
+  r = await api('/dimmed/sketch/dimension', { method: 'POST', body: { op: { entity: 0, value: 40 } } });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.applied, 'length');
+  const width = Math.abs(r.data.sketch.points[2].x - r.data.sketch.points[0].x);
+  assert.ok(Math.abs(width - 40) < 1e-6, `expected 40, got ${width}`);
+
+  // A name: the geometry follows the param, which is the point of the feature.
+  r = await api('/dimmed/sketch/dimension', { method: 'POST', body: { op: { entity: 3, value: 'span' } } });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.data.sketch.constraints.at(-1), { type: 'distance', e: 3, value: 'span' });
+  const height = Math.abs(r.data.sketch.points[3].y - r.data.sketch.points[0].y);
+  assert.ok(Math.abs(height - 50) < 1e-6, `expected the param's 50, got ${height}`);
+
+  // And it keeps following it: moving the slider moves the drawn profile.
+  r = await api('/dimmed', { method: 'PATCH', body: { params: { span: 70 } } });
+  assert.equal(r.status, 200);
+  r = await api('/dimmed/sketch/solve', { method: 'POST', body: {} });
+  const grown = Math.abs(r.data.sketch.points[3].y - r.data.sketch.points[0].y);
+  assert.ok(Math.abs(grown - 70) < 1e-6, `expected 70 after the slider moved, got ${grown}`);
+
+  // A name that is not a parameter says which ones are.
+  r = await api('/dimmed/sketch/dimension', { method: 'POST', body: { op: { entity: 0, value: 'wdith' } } });
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /no numeric parameter 'wdith'.*span/);
+
+  // A dimension that cannot hold is refused rather than half-applied.
+  r = await api('/dimmed/sketch/dimension', { method: 'POST', body: { op: { entity: 0, value: 12 } } });
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /cannot hold/);
+
+  // It comes off on its own, leaving the geometry.
+  const doc = await api('/document');
+  const stored = doc.data.cells.find((c) => c.id === 'dimmed').sketch;
+  r = await api('/dimmed/sketch/erase', {
+    method: 'POST',
+    body: { constraint: stored.constraints.length - 1 },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.sketch.constraints.length, stored.constraints.length - 1);
+  assert.equal(r.data.sketch.entities.length, 4);
+
+  assert.equal((await api('/dimmed', { method: 'DELETE' })).status, 200);
+});
+
 test('erasing removes an entity and what only it held up', async () => {
   const r = await api('/fromscratch/sketch/erase', {
     method: 'POST',

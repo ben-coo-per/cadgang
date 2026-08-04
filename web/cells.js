@@ -432,6 +432,7 @@ function renderStack() {
         },
         draw: (body) => persisted(body, '/sketch/draw'),
         erase: (body) => persisted(body, '/sketch/erase'),
+        dimension: (body) => persisted(body, '/sketch/dimension'),
       }));
     }
 

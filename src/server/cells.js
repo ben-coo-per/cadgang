@@ -22,7 +22,7 @@ import { compileCell } from '../core/sandbox.js';
 import { cellApi } from '../core/cellapi.js';
 import { topology, Query, enumerate, anchorFor } from '../core/query.js';
 import { solveWithDrag } from '../core/sketch.js';
-import { drawOn, eraseEntity } from '../core/sketchdraw.js';
+import { drawOn, eraseEntity, eraseConstraint, dimensionOn } from '../core/sketchdraw.js';
 import * as ops from '../core/ops.js';
 import { meshingBounds } from '../core/sdf.js';
 import { meshStats } from '../core/mesher.js';
@@ -180,13 +180,37 @@ export function cellsRouter(doc, rootDir) {
     } catch (e) { fail(res, e); }
   });
 
-  /** Erase one entity from a cell's sketch, and whatever only it held up. */
+  /**
+   * Dimension a line, a curve, or the gap between two points.
+   *
+   * `value` may be a number or the name of one of the cell's params, which is
+   * the whole point: it is how an outline someone drew by hand becomes
+   * parametric, driven by the same slider the program declares.
+   */
+  r.post('/:id/sketch/dimension', (req, res) => {
+    try {
+      const cell = doc.get(req.params.id);
+      const data = req.body?.sketch ?? cell.sketch;
+      if (!data) throw new GraphError(`Cell '${cell.id}' has no sketch`);
+      const result = dimensionOn(data, req.body?.op, { params: cell.params || {} });
+      doc.updateCell(cell.id, { sketch: result.sketch });
+      res.json(result);
+    } catch (e) { fail(res, e); }
+  });
+
+  /**
+   * Erase one entity from a cell's sketch and whatever only it held up, or one
+   * constraint on its own — which is how a dimension comes back off.
+   */
   r.post('/:id/sketch/erase', (req, res) => {
     try {
       const cell = doc.get(req.params.id);
       const data = req.body?.sketch ?? cell.sketch;
       if (!data) throw new GraphError(`Cell '${cell.id}' has no sketch`);
-      const result = eraseEntity(data, req.body?.entity, { params: cell.params || {} });
+      const params = cell.params || {};
+      const result = Number.isInteger(req.body?.constraint)
+        ? eraseConstraint(data, req.body.constraint, { params })
+        : eraseEntity(data, req.body?.entity, { params });
       doc.updateCell(cell.id, { sketch: result.sketch });
       res.json(result);
     } catch (e) { fail(res, e); }

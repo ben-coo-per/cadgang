@@ -140,6 +140,117 @@ export function drawOn(data, op, { params = {}, snap = 0 } = {}) {
 }
 
 /**
+ * Dimension something: a line's length, a curve's radius, or the gap between
+ * two points.
+ *
+ * The opposite policy from `drawOn`'s inference, and deliberately so. A guessed
+ * horizontal is ours and gets dropped when it does not fit; a dimension is a
+ * statement the person made, so if it cannot hold, the answer is to say which
+ * constraints fight rather than to quietly not apply it. The solver already
+ * names them, which is the whole reason for owning it.
+ *
+ * `value` may be a NUMBER or the NAME OF A PARAM. The name is the interesting
+ * case: it is what turns a drawn outline into a parametric one, so a slider the
+ * program declares moves geometry a person drew by hand.
+ */
+export function dimensionOn(data, op, { params = {} } = {}) {
+  const sk = new Sketch({ ...(data || {}), params });
+  const before = solveSketch(sk, { params });
+
+  const value = dimensionValue(op?.value, params);
+  let label;
+
+  if (Number.isInteger(op?.constraint)) {
+    // Changing a dimension already written, rather than adding another one.
+    // Without this the only way to fix a typed number is to remove it and say
+    // it again, and the second saying is a different constraint — which loses
+    // whatever else pointed at the first.
+    const c = sk.constraints[op.constraint];
+    if (!c) throw new GraphError(`This sketch has no constraint ${op.constraint}`);
+    if (c.value === undefined) {
+      throw new GraphError(`Constraint ${op.constraint} (${c.type}) has no value to set`);
+    }
+    c.value = value;
+    label = c.type;
+  } else if (Number.isInteger(op?.entity)) {
+    const e = sk.entities[op.entity];
+    if (!e) throw new GraphError(`This sketch has no entity ${op.entity}`);
+    if (e.type === 'line') {
+      sk.distance(op.entity, value);
+      label = 'length';
+    } else {
+      sk.radius(op.entity, value);
+      label = 'radius';
+    }
+  } else if (Array.isArray(op?.points) && op.points.length === 2) {
+    const [a, b] = op.points;
+    for (const i of [a, b]) {
+      if (!Number.isInteger(i) || !sk.points[i]) {
+        throw new GraphError(`This sketch has no point ${i}`);
+      }
+    }
+    if (a === b) throw new GraphError('A dimension needs two different points');
+    if (op.axis === 'x') { sk.distanceX(a, b, value); label = 'horizontal gap'; }
+    else if (op.axis === 'y') { sk.distanceY(a, b, value); label = 'vertical gap'; }
+    else { sk.distance(a, b, value); label = 'distance'; }
+  } else {
+    throw new GraphError('A dimension needs an entity, or two points');
+  }
+
+  const report = solveSketch(sk, { params });
+  if (!report.converged && before.converged) {
+    throw new GraphError(`That ${label} cannot hold: ${report.message}`);
+  }
+
+  return {
+    sketch: sk.toJSON(),
+    report,
+    applied: label,
+    // Saying it twice is not an error — the geometry is still right — but it is
+    // worth saying out loud, because a redundant dimension looks like a
+    // dimension that works right up until the one it duplicates is changed.
+    redundant: report.redundant > 0,
+  };
+}
+
+/** A dimension is a number, or the name of a param the cell actually declares. */
+function dimensionValue(value, params) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const text = String(value ?? '').trim();
+  if (text === '') throw new GraphError('A dimension needs a value');
+  const n = Number(text);
+  if (Number.isFinite(n)) return n;
+  if (!/^[A-Za-z_$][\w$]*$/.test(text)) {
+    throw new GraphError(`'${text}' is neither a number nor a parameter name`);
+  }
+  if (typeof params[text] !== 'number') {
+    const known = Object.keys(params).filter((k) => typeof params[k] === 'number');
+    throw new GraphError(
+      `This cell has no numeric parameter '${text}'.` +
+      (known.length ? ` It has: ${known.join(', ')}.` : ' It declares none.')
+    );
+  }
+  return text;
+}
+
+/**
+ * Remove one constraint by index.
+ *
+ * The way back out of a dimension that was a mistake, and the reason the draw
+ * tools can afford to guess: anything they add can be taken off individually
+ * rather than by undoing the geometry it came with.
+ */
+export function eraseConstraint(data, index, { params = {} } = {}) {
+  const sk = new Sketch({ ...(data || {}), params });
+  if (!Number.isInteger(index) || index < 0 || index >= sk.constraints.length) {
+    throw new GraphError(`This sketch has no constraint ${index}`);
+  }
+  sk.constraints.splice(index, 1);
+  const report = solveSketch(sk, { params });
+  return { sketch: sk.toJSON(), report };
+}
+
+/**
  * Remove an entity, and with it the constraints that spoke about it.
  *
  * Points that nothing refers to any more go too, because a stray dot on the

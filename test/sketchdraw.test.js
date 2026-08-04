@@ -11,8 +11,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { drawOn, eraseEntity } from '../src/core/sketchdraw.js';
-import { sketch, loopArea } from '../src/core/sketch.js';
+import { drawOn, eraseEntity, eraseConstraint, dimensionOn } from '../src/core/sketchdraw.js';
+import { sketch, loopArea, Sketch } from '../src/core/sketch.js';
 import { GraphError } from '../src/core/errors.js';
 
 const near = (a, b, tol = 1e-6) =>
@@ -202,6 +202,90 @@ test('erasing garbage-collects points, but never a datum', () => {
   const { sketch: out } = eraseEntity(drawn, 0);
   assert.equal(out.entities.length, 0);
   assert.deepEqual(out.points, [{ x: 0, y: 0, fixed: true }]);
+});
+
+// ----------------------------------------------------------------- dimensions
+
+test('dimensioning a line makes it that long', () => {
+  const s = drawOn(empty(), { tool: 'line', from: [0, 0], to: [37, 0.4] }).sketch;
+  const { sketch: out, report, applied } = dimensionOn(s, { entity: 0, value: 40 });
+  assert.equal(applied, 'length');
+  assert.ok(report.converged);
+  const [a, b] = out.points;
+  near(Math.hypot(b.x - a.x, b.y - a.y), 40);
+});
+
+test('a dimension may be a parameter name, and then it follows the slider', () => {
+  const s = drawOn(empty(), { tool: 'line', from: [0, 0], to: [37, 0] }).sketch;
+  const { sketch: out } = dimensionOn(s, { entity: 0, value: 'width' }, { params: { width: 40 } });
+  assert.deepEqual(out.constraints.at(-1), { type: 'distance', e: 0, value: 'width' });
+
+  // The same sketch, solved against a different value of that param, is a
+  // different length — which is the entire reason to write a name.
+  const wider = new Sketch({ ...out, params: { width: 65 } });
+  wider.solve();
+  near(Math.hypot(wider.points[1].x - wider.points[0].x, wider.points[1].y - wider.points[0].y), 65);
+});
+
+test('a dimension naming a parameter that does not exist says which do', () => {
+  const s = drawOn(empty(), { tool: 'line', from: [0, 0], to: [37, 0] }).sketch;
+  assert.throws(
+    () => dimensionOn(s, { entity: 0, value: 'heigth' }, { params: { width: 40, depth: 20 } }),
+    (e) => e instanceof GraphError && /no numeric parameter 'heigth'/.test(e.message) &&
+      /width, depth/.test(e.message)
+  );
+  assert.throws(() => dimensionOn(s, { entity: 0, value: '' }), /needs a value/);
+  assert.throws(() => dimensionOn(s, { entity: 0, value: '2 + 2' }), /neither a number nor/);
+});
+
+test('dimensioning a circle sets its radius', () => {
+  const s = drawOn(empty(), { tool: 'circle', center: [0, 0], through: [7.3, 0] }).sketch;
+  const { sketch: out, applied } = dimensionOn(s, { entity: 0, value: 6 });
+  assert.equal(applied, 'radius');
+  near(out.entities[0].r, 6);
+});
+
+test('a dimension between two points can be signed along an axis', () => {
+  let s = drawOn(empty(), { tool: 'line', from: [0, 0], to: [30, 18] }).sketch;
+  s = dimensionOn(s, { points: [0, 1], value: 40, axis: 'x' }).sketch;
+  near(s.points[1].x - s.points[0].x, 40);
+  s = dimensionOn(s, { points: [0, 1], value: 25, axis: 'y' }).sketch;
+  near(s.points[1].y - s.points[0].y, 25);
+  near(s.points[1].x - s.points[0].x, 40, 1e-6);
+});
+
+test('a dimension that cannot hold is refused, and names what it fights', () => {
+  // A rectangle whose width is already 40 cannot also be 60.
+  const s = drawOn(empty(), { tool: 'rect', from: [0, 0], to: [40, 25] }).sketch;
+  const once = dimensionOn(s, { entity: 0, value: 40 });
+  assert.throws(
+    () => dimensionOn(once.sketch, { entity: 0, value: 60 }),
+    (e) => e instanceof GraphError &&
+      /cannot hold/.test(e.message) && /over-constrained/.test(e.message)
+  );
+  // And the sketch it refused on is untouched.
+  assert.equal(once.sketch.constraints.length, 5);
+});
+
+test('saying the same thing twice is allowed, and reported', () => {
+  let s = drawOn(empty(), { tool: 'rect', from: [0, 0], to: [40, 25] }).sketch;
+  s = dimensionOn(s, { entity: 0, value: 40 }).sketch;
+  const again = dimensionOn(s, { entity: 2, value: 40 }); // the opposite side
+  assert.ok(again.report.converged, 'still solves');
+  assert.ok(again.redundant, 'but it is noise, and says so');
+});
+
+test('a dimension comes back off on its own, without the geometry', () => {
+  let s = drawOn(empty(), { tool: 'line', from: [0, 0], to: [37, 0] }).sketch;
+  s = dimensionOn(s, { entity: 0, value: 40 }).sketch;
+  const at = s.constraints.length - 1;
+  const { sketch: out, report } = eraseConstraint(s, at);
+  assert.equal(out.constraints.length, at);
+  assert.equal(out.entities.length, 1, 'the line is still there');
+  assert.ok(report.converged);
+  assert.ok(report.dof > 0, 'and it is free again');
+
+  assert.throws(() => eraseConstraint(out, 99), GraphError);
 });
 
 test('erasing an entity that is not there says so', () => {

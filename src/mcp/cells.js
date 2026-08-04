@@ -56,6 +56,9 @@ sk — 2D sketches under constraint, for profiles a primitive cannot express. sk
   write the cell around sk.saved() with NO sketch and say so in the prompt, instead of inventing coordinates.
   Their gestures are stored as constrained geometry (a snapped corner becomes one shared point, a near-level
   line becomes horizontal), so the profile they draw survives the parameter changes you write.
+  They can also DIMENSION on that canvas, and a dimension's value may be the NAME OF ONE OF THIS CELL'S PARAMS —
+  so declare the params you want them to drive (`export const params = { width: 40 }`) even when the program
+  never reads them itself. A dimension typed as 'width' binds the drawn geometry to that slider forever after.
   geometry: point(x,y,{fixed}) -> index; anchor(x,y) a pinned point (every sketch wants at least one);
     line(a,b) / circle(centrePoint, r) / arc(centre, a, b) counter-clockwise from a to b — each returns an entity index;
     rectangle(x1,y1,x2,y2) -> four already-squared lines; on('XY'|'XZ'|'YZ'|'YX'|'ZX'|'ZY') sets the plane

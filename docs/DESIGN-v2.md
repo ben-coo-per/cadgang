@@ -291,10 +291,19 @@ parameter change, the rest is construction.
 
 All six are now built, and the first thing the plan never covered has been too:
 
-7. **Drawing on the canvas.** Line, rectangle, circle, arc, and erase, with the
-   meaning of a gesture inferred server-side (`src/core/sketchdraw.js`,
-   `POST /:id/sketch/draw` and `/erase`) — see *Sketch cells* above for the two
-   rules that govern it. Unlike a drag, a draw PERSISTS, because a drag is sixty
+7. **Drawing and dimensioning on the canvas.** Line, rectangle, circle, arc,
+   dimension, and erase, with the meaning of a gesture inferred server-side
+   (`src/core/sketchdraw.js`, `POST /:id/sketch/draw`, `/dimension`, `/erase`) —
+   see *Sketch cells* above for the two rules that govern it.
+
+   Dimensioning takes the OPPOSITE policy from drawing's inference, and that is
+   the point of separating them. An inferred horizontal is ours, so it gets
+   dropped when it does not fit; a dimension is a statement the person made, so
+   a conflict is reported with the constraints that fight rather than quietly
+   not applied. A dimension's value may be a number or THE NAME OF ONE OF THE
+   CELL'S PARAMS, which is what closes the loop the whole design is about: an
+   outline drawn by hand becomes parametric, driven by the same slider the
+   program declares, without anyone writing coordinates. Unlike a drag, a draw PERSISTS, because a drag is sixty
    events that mean one edit and a drawn line is one gesture that means one. A
    cell whose code calls `sk.saved()` gets a canvas whether or not a sketch is
    stored yet, so a program can be written for a profile that does not exist and

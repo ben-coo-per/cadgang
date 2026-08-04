@@ -214,6 +214,18 @@ footer {
 }
 .sketch-note.err { color: var(--signal-red); }
 
+/* Typing a dimension happens in the note bar rather than in a dialog: the
+   value belongs next to the degrees-of-freedom count it is about to change. */
+.sketch-dim-input {
+  width: 7ch;
+  padding: 0 3px;
+  border: var(--bw-hair) solid var(--ink-soft); border-radius: 2px;
+  background: var(--paper); color: var(--ink);
+  font: inherit; font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+.sketch-dim-hint { color: var(--ink-faint); }
+
 /* --- assertion cells -----------------------------------------------------
    A check reads differently from a modelling step, so it looks different: no
    step number, a rule down the left, and the measurements laid out as a small

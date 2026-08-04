@@ -27,8 +27,8 @@ const HIT = 7;        // px within which a click grabs a point, or snaps to one
 const PAD = 18;       // px of margin around the fitted sketch
 
 const COLOURS = {
-  light: { line: '#2f5d8a', point: '#1c1c1a', fixed: '#a33', hint: '#c9c8c4', text: '#6b6a66', ghost: '#8aa8c4', snap: '#3c8f5a', warn: '#a33' },
-  dark: { line: '#7fb3e0', point: '#e8e7e3', fixed: '#e08a8a', hint: '#3a3936', text: '#8d8c88', ghost: '#5b7d9c', snap: '#6fbd8c', warn: '#e08a8a' },
+  light: { line: '#2f5d8a', point: '#1c1c1a', fixed: '#a33', hint: '#c9c8c4', text: '#6b6a66', ghost: '#8aa8c4', snap: '#3c8f5a', warn: '#a33', dim: '#9a7b3f', param: '#3c7f8f' },
+  dark: { line: '#7fb3e0', point: '#e8e7e3', fixed: '#e08a8a', hint: '#3a3936', text: '#8d8c88', ghost: '#5b7d9c', snap: '#6fbd8c', warn: '#e08a8a', dim: '#d3b271', param: '#7fc0d0' },
 };
 
 /**
@@ -44,7 +44,8 @@ const TOOLS = [
   { tool: 'rect', key: 'r', label: 'Rect', clicks: 2, hint: 'click two opposite corners' },
   { tool: 'circle', key: 'c', label: 'Circle', clicks: 2, hint: 'click the centre, then the rim' },
   { tool: 'arc', key: 'a', label: 'Arc', clicks: 3, hint: 'centre, then both ends counter-clockwise' },
-  { tool: 'erase', key: 'x', label: 'Erase', clicks: 1, hint: 'click a line or circle to remove it' },
+  { tool: 'dim', key: 'd', label: 'Dim', clicks: 1, hint: 'click a line, a circle, a dimension — or two points' },
+  { tool: 'erase', key: 'x', label: 'Erase', clicks: 1, hint: 'click geometry or a dimension to remove it' },
 ];
 
 const spec = (tool) => TOOLS.find((t) => t.tool === tool);
@@ -55,7 +56,7 @@ const spec = (tool) => TOOLS.find((t) => t.tool === tool);
  * `solve`, `save`, `draw` and `erase` are passed in rather than reached for, so
  * this module knows about geometry and pointers and nothing about the API.
  */
-export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save, draw, erase }) {
+export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save, draw, erase, dimension }) {
   const ctx = canvas.getContext('2d');
   let current = sketch;
   // The view is remembered with the gesture, and for the same reason: a canvas
@@ -79,6 +80,9 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
   let busy = false;      // a draw is in flight; ignore clicks until it lands
   let said = null;       // what the last draw was understood to mean
   let lastReport = null; // the newest solve report, so a tool change can restate it
+  let framed = hadView;  // whether the view has been computed against a real size
+  let labels = [];       // dimension labels in screen space, for hit-testing
+  let asking = null;     // the value input open over the note bar, if any
 
   const snapRadius = () => HIT / view.scale;
 
@@ -88,13 +92,38 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
     ui.stage = stage;
   }
 
-  function fit() {
-    const w = canvas.clientWidth || 320;
-    const h = canvas.clientHeight || 200;
+  /**
+   * Match the drawing buffer to the element's real size.
+   *
+   * A canvas has two sizes and getting them apart is how you get ellipses out
+   * of circles. This runs before every paint rather than only at mount, because
+   * at mount the card is still detached — `clientWidth` is 0, and anything
+   * derived from it is a guess that then gets stretched to whatever width the
+   * panel turns out to be. Returns false while the element has no layout yet,
+   * which is the signal to try again on the next frame rather than to invent a
+   * size.
+   */
+  function resize() {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (!w || !h) return false;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(w * dpr);
-    canvas.height = Math.round(h * dpr);
+    const bw = Math.round(w * dpr);
+    const bh = Math.round(h * dpr);
+    // Assigning either dimension clears the canvas, so only do it on a change.
+    if (canvas.width !== bw || canvas.height !== bh) {
+      canvas.width = bw;
+      canvas.height = bh;
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return true;
+  }
+
+  function fit() {
+    if (!resize()) return;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    framed = true;
 
     const box = bounds(current);
     const scale = Math.min(
@@ -120,6 +149,7 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
    * between the click that placed it and the click that should share it.
    */
   function fitIfNeeded() {
+    if (!framed) { fit(); return; }
     if (stage.length) return;
     const w = canvas.clientWidth, h = canvas.clientHeight;
     const b = bounds(current);
@@ -129,6 +159,11 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
   }
 
   function draw2d() {
+    // The element may still be waiting for layout — at mount the card has not
+    // been appended yet. Come back next frame rather than painting into a
+    // buffer sized from a guess.
+    if (!resize()) { requestAnimationFrame(draw2d); return; }
+    if (!framed) fit();
     const theme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
     const c = COLOURS[theme];
     const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -144,7 +179,13 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
     ctx.moveTo(ox, oy - 10); ctx.lineTo(ox, oy + 10);
     ctx.stroke();
 
-    const doomed = tool === 'erase' && pointer ? entityAt(pointer[0], pointer[1]) : null;
+    const overLabel = pointer && (tool === 'erase' || tool === 'dim')
+      ? labelAt(...toScreen(pointer))
+      : -1;
+    const doomedLabel = tool === 'erase' ? overLabel : -1;
+    const doomed = tool === 'erase' && pointer && overLabel < 0
+      ? entityAt(pointer[0], pointer[1])
+      : null;
 
     (current.entities || []).forEach((e, i) => {
       ctx.strokeStyle = i === doomed ? c.warn : c.line;
@@ -166,7 +207,24 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
       }
     });
 
-    if (tool !== 'select' && tool !== 'erase') drawPending(c);
+    drawDimensions(c, doomedLabel);
+
+    // The dim tool stages a POINT rather than a position, so it marks the point
+    // it is measuring from instead of rubber-banding to the pointer.
+    if (tool === 'dim') {
+      for (const s of stage) {
+        const p = current.points?.[s.point];
+        if (!p) continue;
+        const [sx, sy] = toScreen([p.x, p.y]);
+        ctx.strokeStyle = c.dim;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 6.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    } else if (tool !== 'select' && tool !== 'erase') {
+      drawPending(c);
+    }
 
     // The snap ring is the promise this canvas makes before the round trip: put
     // the click here and it will BE that point, not a new one on top of it.
@@ -201,6 +259,115 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
       const a1 = -Math.atan2(xy(current, e.b)[1] - centre[1], xy(current, e.b)[0] - centre[0]);
       ctx.arc(cx, cy, r * view.scale, a0, a1, true);
     }
+  }
+
+  /**
+   * Draw the dimensions, and remember where their labels landed.
+   *
+   * A dimension you cannot see is a rule the sketch obeys for reasons nobody
+   * can read, so every constraint carrying a value gets a label. The label is
+   * also the handle: `labels` is what the dim and erase tools hit-test against,
+   * so what you click is by construction the thing that was drawn.
+   *
+   * A value that names a PARAMETER is coloured differently and shown by name.
+   * That difference is the whole point of the feature — 40 is a number someone
+   * typed, `width` is a number the slider owns — and it should be visible at a
+   * glance rather than by clicking.
+   */
+  function drawDimensions(c, doomedLabel) {
+    labels = [];
+    ctx.save();
+    ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    (current.constraints || []).forEach((con, i) => {
+      const named = typeof con.value === 'string';
+      const text = named ? con.value : formatValue(con.value);
+      const prefix = con.type === 'radius' ? 'R' : con.type === 'diameter' ? '⌀' :
+        con.type === 'distanceX' ? '↔' : con.type === 'distanceY' ? '↕' : '';
+      const shown = prefix + text;
+      const width = ctx.measureText(shown).width;
+      // Half the text's own width is part of the offset, or a long label sits
+      // on top of the edge it is describing instead of beside it.
+      const spot = dimensionAnchor(con, width / 2);
+      if (!spot) return;
+      const rect = { x: spot.x - width / 2 - 3, y: spot.y - 7, w: width + 6, h: 14 };
+      labels.push({ constraint: i, ...rect, value: con.value, type: con.type });
+
+      // A leader from the geometry to the label, so a label floating near two
+      // edges still says which one it is about.
+      ctx.strokeStyle = c.hint;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(spot.from[0], spot.from[1]);
+      ctx.lineTo(spot.x, spot.y);
+      ctx.stroke();
+
+      // Punch the label out of whatever it lands on: at this size a value
+      // crossed by an edge is unreadable.
+      ctx.clearRect(rect.x, rect.y, rect.w, rect.h);
+      ctx.fillStyle = i === doomedLabel ? c.warn : (named ? c.param : c.dim);
+      ctx.fillText(shown, spot.x, spot.y);
+    });
+    ctx.restore();
+  }
+
+  /** Where one constraint's label goes, and what it points at. */
+  function dimensionAnchor(con, pad = 0) {
+    const P = (i) => current.points?.[i];
+    const OFFSET = 12 + pad;
+
+    if (con.type === 'radius' || con.type === 'diameter') {
+      const e = current.entities?.[con.e];
+      if (!e || (e.type !== 'circle' && e.type !== 'arc')) return null;
+      const centre = P(e.c);
+      if (!centre) return null;
+      const r = e.type === 'circle'
+        ? Math.abs(e.r)
+        : Math.hypot(P(e.a).x - centre.x, P(e.a).y - centre.y);
+      const from = toScreen([centre.x, centre.y]);
+      const rim = toScreen([centre.x + r * 0.7071, centre.y + r * 0.7071]);
+      // Pushed a little further out along the same diagonal, so the value sits
+      // outside the circle rather than across its rim.
+      const away = Math.hypot(rim[0] - from[0], rim[1] - from[1]) || 1;
+      return {
+        from,
+        x: rim[0] + ((rim[0] - from[0]) / away) * pad,
+        y: rim[1] + ((rim[1] - from[1]) / away) * pad,
+      };
+    }
+
+    let a, b;
+    if (con.e !== undefined && con.a === undefined) {
+      const e = current.entities?.[con.e];
+      if (!e || e.type !== 'line') return null;
+      a = P(e.a); b = P(e.b);
+    } else {
+      a = P(con.a); b = P(con.b);
+    }
+    if (!a || !b) return null;
+    if (!['distance', 'distanceX', 'distanceY'].includes(con.type)) return null;
+
+    const sa = toScreen([a.x, a.y]);
+    const sb = toScreen([b.x, b.y]);
+    const mid = [(sa[0] + sb[0]) / 2, (sa[1] + sb[1]) / 2];
+    const len = Math.hypot(sb[0] - sa[0], sb[1] - sa[1]) || 1;
+    const perp = [-(sb[1] - sa[1]) / len, (sb[0] - sa[0]) / len];
+    return {
+      from: mid,
+      x: mid[0] + perp[0] * OFFSET,
+      y: mid[1] + perp[1] * OFFSET,
+    };
+  }
+
+  /** The dimension label under a screen position, or -1. */
+  function labelAt(px, py) {
+    for (let i = labels.length - 1; i >= 0; i--) {
+      const l = labels[i];
+      if (px >= l.x && px <= l.x + l.w && py >= l.y && py <= l.y + l.h) return l.constraint;
+    }
+    return -1;
   }
 
   /** The gesture under way, drawn as it would land if the next click happened. */
@@ -341,14 +508,150 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
     }
   }
 
+  /**
+   * Ask for a dimension's value in the note bar.
+   *
+   * Prefilled with what the geometry currently measures, so accepting it
+   * without typing means "hold it where I drew it" — which is the common case
+   * and should cost one keystroke. A NAME may be typed instead of a number;
+   * the server checks it against the cell's params and says which exist when
+   * it does not, so the field does not have to know about them.
+   */
+  function askValue(prompt, initial, apply) {
+    if (!note) return;
+    cancelAsk();
+    note.textContent = '';
+    note.className = 'sketch-note';
+    const label = document.createElement('span');
+    label.textContent = `${prompt} `;
+    const input = document.createElement('input');
+    input.className = 'sketch-dim-input';
+    input.value = initial;
+    input.spellcheck = false;
+    input.title = 'a number, or the name of one of this cell\'s parameters';
+    const hint = document.createElement('span');
+    hint.className = 'sketch-dim-hint';
+    hint.textContent = ' ⏎ apply · esc cancel · a param name binds it to the slider';
+    note.append(label, input, hint);
+    asking = { input };
+
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation(); // the canvas's own shortcuts must not eat the typing
+      if (e.key === 'Enter') {
+        const value = input.value.trim();
+        cancelAsk();
+        apply(value);
+      } else if (e.key === 'Escape') {
+        cancelAsk();
+        report(null);
+        canvas.focus();
+      }
+    });
+    input.addEventListener('blur', () => {
+      // Clicking back onto the canvas abandons the dimension rather than
+      // leaving a field open that no longer has anything to do with the tool.
+      if (asking?.input === input) { cancelAsk(); report(null); }
+    });
+    input.focus();
+    input.select();
+  }
+
+  function cancelAsk() {
+    if (!asking) return;
+    asking = null;
+    if (note) note.textContent = '';
+  }
+
+  /** Apply a dimension, and say what it did or why it could not. */
+  async function applyDimension(op, value) {
+    busy = true;
+    try {
+      const result = await dimension({ sketch: current, op: { ...op, value } });
+      current = result.sketch;
+      said = result.redundant
+        ? `${result.applied} — but you had already said that`
+        : `${result.applied} ${value}`;
+      fitIfNeeded();
+      report(result);
+      draw2d();
+    } catch (e) {
+      said = null;
+      report({ error: e.message });
+      draw2d();
+    } finally {
+      busy = false;
+    }
+  }
+
+  /** What the geometry measures now, as the field's starting value. */
+  function measured(op) {
+    const P = (i) => current.points[i];
+    if (Number.isInteger(op.entity)) {
+      const e = current.entities[op.entity];
+      if (e.type === 'line') return Math.hypot(P(e.b).x - P(e.a).x, P(e.b).y - P(e.a).y);
+      if (e.type === 'circle') return Math.abs(e.r);
+      return Math.hypot(P(e.a).x - P(e.c).x, P(e.a).y - P(e.c).y);
+    }
+    const [a, b] = op.points;
+    return Math.hypot(P(b).x - P(a).x, P(b).y - P(a).y);
+  }
+
+  /** The dim tool: name a length, a radius, or a gap — or retype one. */
+  function dimensionAt(p) {
+    const hitLabel = labelAt(...toScreen(p));
+    if (hitLabel >= 0) {
+      const con = current.constraints[hitLabel];
+      stage = [];
+      remember();
+      askValue(
+        `${con.type} =`,
+        typeof con.value === 'string' ? con.value : formatValue(con.value),
+        (value) => applyDimension({ constraint: hitLabel }, value)
+      );
+      return;
+    }
+
+    // A point starts a gap between two points; anything else dimensions itself.
+    const hitPoint = pointAt(p[0], p[1]);
+    if (hitPoint >= 0) {
+      if (stage.length && stage[0].point === hitPoint) return; // the same point twice
+      if (!stage.length) {
+        stage = [{ point: hitPoint }];
+        remember();
+        draw2d();
+        return;
+      }
+      const op = { points: [stage[0].point, hitPoint] };
+      stage = [];
+      remember();
+      askValue('distance =', formatValue(measured(op)), (value) => applyDimension(op, value));
+      return;
+    }
+
+    const hitEntity = entityAt(p[0], p[1]);
+    if (hitEntity < 0) return;
+    const op = { entity: hitEntity };
+    const kind = current.entities[hitEntity].type === 'line' ? 'length' : 'radius';
+    stage = [];
+    remember();
+    askValue(`${kind} =`, formatValue(measured(op)), (value) => applyDimension(op, value));
+  }
+
   async function place(p) {
     const s = spec(tool);
+    if (tool === 'dim') { dimensionAt(p); return; }
     if (tool === 'erase') {
-      const i = entityAt(p[0], p[1]);
-      if (i < 0) return;
+      // A dimension label wins over the geometry under it: a label is small and
+      // deliberately aimed at, and removing the line when someone meant to
+      // remove its dimension is the more expensive mistake.
+      const con = labelAt(...toScreen(p));
+      const i = con >= 0 ? -1 : entityAt(p[0], p[1]);
+      if (con < 0 && i < 0) return;
       busy = true;
       try {
-        const result = await erase({ sketch: current, entity: i });
+        const result = await erase(con >= 0
+          ? { sketch: current, constraint: con }
+          : { sketch: current, entity: i });
         current = result.sketch;
         said = null;
         fitIfNeeded();
@@ -414,6 +717,18 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
       tools.append(b);
     }
   }
+
+  // The panel is resizable and the card is laid out after this runs, so the
+  // element's size is something to be told about rather than measured once.
+  // A resize genuinely changes the frame, so it re-fits even mid-gesture.
+  let boxWidth = 0, boxHeight = 0;
+  new ResizeObserver(() => {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h || (w === boxWidth && h === boxHeight)) return;
+    boxWidth = w; boxHeight = h;
+    fit();
+    draw2d();
+  }).observe(canvas);
 
   canvas.tabIndex = 0;
   canvas.addEventListener('focus', () => { ui.focused = true; });
@@ -504,6 +819,14 @@ export function sketchCanvas({ sketch, canvas, note, tools, ui = {}, solve, save
     },
     redraw() { fit(); draw2d(); },
   };
+}
+
+/** Dimensions read as drawings, not as floats: 40, 6.5, 12.75. */
+function formatValue(v) {
+  if (typeof v === 'string') return v;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return String(Math.round(n * 100) / 100);
 }
 
 function xy(sketch, i) {
