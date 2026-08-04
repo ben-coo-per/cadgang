@@ -13,7 +13,7 @@ import { z } from 'zod';
 const CELL_API = `A cell program is ES-module source with exactly two exports:
 
   export const params = { w: 60, d: 40, h: 24, r: 3 };
-  export default ({ p, brep, q, assert, input, inputs, topology }) => {
+  export default ({ p, brep, q, sk, assert, input, inputs, topology }) => {
     let s = brep.box(p.w, p.d, p.h);
     s = brep.fillet(s, q.edges(s).linear().along('z').expect(4), p.r);
     return brep.shell(s, q.faces(s).planar().facing('+z').expect(1), 2);
@@ -29,11 +29,12 @@ ARGUMENTS
            Declare what you need with selections: {"lip": "edge"} and the cell parks until someone clicks
            (cadgang_cells_await_pick). Use this only when the reference genuinely needs a human; a written
            query is better whenever the geometry can describe itself.
-  brep, q, assert, topology  as below
+  brep, q, sk, assert, topology  as below
 
 brep — box(sx,sy,sz,{center:'xy'|'xyz'|''}) sitting on z=0 unless centered; cylinder(r,h,{center}); sphere(r);
   union/subtract/intersect(base, ...tools); fillet(shape, edgeQuery, radius); chamfer(shape, edgeQuery, distance);
   shell(shape, faceQuery|null, thickness) — POSITIVE thickness hollows INWARD, negative grows outward, null query seals a void;
+  extrude(sketch, distance, {symmetric, offset}); revolve(sketch, axis=[0,0,1], {offset});
   translate(shape,[x,y,z]); rotate(shape, deg, axis=[0,0,1], origin); scale(shape, factor, origin); mirror(shape,'XY'|'XZ'|'YZ', origin);
   volume(shape); area(shape); bbox(shape) -> {min,max,size}
 
@@ -46,6 +47,23 @@ q — q.faces(shape) / q.edges(shape), then chain filters:
   finish: expect(n) — ASSERT the count and carry on; count(); one(); all(); explain()
 
 Always end a query with .expect(n). A query that matches an unexpected number of entities then fails the cell loudly instead of quietly building a different part. A query that matches nothing is always an error.
+
+sk — 2D sketches under constraint, for profiles a primitive cannot express. sk.sketch() starts an empty one;
+  sk.saved() returns the sketch stored on THIS cell (what the user drags in the canvas); sk.hasSaved() tests for it.
+  geometry: point(x,y,{fixed}) -> index; anchor(x,y) a pinned point (every sketch wants at least one);
+    line(a,b) / circle(centrePoint, r) / arc(centre, a, b) counter-clockwise from a to b — each returns an entity index;
+    rectangle(x1,y1,x2,y2) -> four already-squared lines; on('XY'|'XZ'|'YZ'|'YX'|'ZX'|'ZY') sets the plane
+  constraints: coincident(p,p) horizontal(line) vertical(line) distance(line,v) distance(p,p,v)
+    distanceX(p,p,v) distanceY(p,p,v) — SIGNED, b minus a; radius(e,v) diameter(e,v) equal(e,f)
+    parallel(e,f) perpendicular(e,f) angle(e,f,degrees) tangent(line|curve, curve) pointOn(p,e) concentric(e,f)
+  Any dimension value may be a NUMBER or the NAME OF A PARAM as a string: s.distance(l, 'width') follows the slider.
+    That is the whole point of a sketch over a point list — write the intent, not the coordinates.
+  solve({params}) returns {converged, dof, redundant, iterations}; brep.extrude/revolve solve it for you if you did not.
+    Starting coordinates only need to be roughly right — the solver pulls them onto the dimensions, and a rough
+    pose is what picks between the two answers a tangency or a mirror has.
+  Sketch geometry must form CLOSED loops. Several loops means boundary first, holes cut from it.
+  dof > 0 means the sketch is under-constrained: it still built, but a later parameter change may move it
+  somewhere you did not intend. Aim for dof 0. 'redundant' means you said something twice; harmless but noise.
 
 assert — ok(cond,msg); volumeUnder(shape,v); volumeOver(shape,v); fitsIn(shape,[x,y,z])
 
@@ -69,6 +87,19 @@ const CELL_STATUS = `Cell status: 'ok' (code matches prompt) | 'stale' (prompt e
  */
 export function registerCellTools(server, { call, ok, fail, base }) {
   const paramValue = z.union([z.number(), z.string(), z.boolean()]);
+
+  const sketchSchema = z.object({
+    plane: z.enum(['XY', 'XZ', 'YZ', 'YX', 'ZX', 'ZY']).optional(),
+    points: z.array(z.object({ x: z.number(), y: z.number(), fixed: z.boolean().optional() })),
+    entities: z.array(z.object({
+      type: z.enum(['line', 'circle', 'arc']),
+      a: z.number().int().optional(),
+      b: z.number().int().optional(),
+      c: z.number().int().optional(),
+      r: z.number().optional(),
+    })),
+    constraints: z.array(z.object({ type: z.string() }).passthrough()),
+  }).describe('A stored sketch the user can drag: points, entities and constraints. Read it back with sk.saved().');
 
   server.registerTool(
     'cadgang_cells_get',
@@ -102,6 +133,7 @@ Args:
   - refs: cell ids this one consumes. Omit for the common case — the previous cell.
   - params: overrides for the program's declared defaults
   - selections: picks this cell needs from the user, e.g. {"lip": "edge"}; the cell parks in 'awaiting_pick' until resolved
+  - sketch: a stored 2D sketch for the user to drag, which the program reads with sk.saved(). Omit when the program builds its own sketch inline with sk.sketch() — that is the usual case.
   - at: insert position (default: end of the stack)
 
 ${CELL_API}`,
@@ -112,6 +144,7 @@ ${CELL_API}`,
         refs: z.array(z.string()).optional().describe('Cell ids consumed (default: the previous cell)'),
         params: z.record(paramValue).optional(),
         selections: z.record(z.enum(['face', 'edge'])).optional().describe('Picks the user must make'),
+        sketch: sketchSchema.optional(),
         at: z.number().int().optional().describe('Insert position'),
         compiledBy: z.string().optional().describe('Model that authored the code'),
       },
@@ -140,6 +173,7 @@ ${CELL_STATUS}`,
         code: z.string().optional().describe('New code (marks the cell diverged)'),
         refs: z.array(z.string()).optional().describe('Cells consumed; must point backwards'),
         selections: z.record(z.enum(['face', 'edge'])).optional(),
+        sketch: sketchSchema.optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },

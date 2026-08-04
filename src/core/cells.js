@@ -528,7 +528,7 @@ export function evaluateCells(doc, targetId = doc.terminal, { stopOnError = true
     try {
       const compiled = compiledFor(cell);
       const value = compiled.run(cellApi({
-        params: cell.params, input, inputs, selections: cell.selections,
+        params: cell.params, input, inputs, selections: cell.selections, sketch: cell.sketch,
       }));
       entry.logs = compiled.logs.map((l) => ({ ...l }));
       results.set(cell.id, checkCellResult(value, cell.id));

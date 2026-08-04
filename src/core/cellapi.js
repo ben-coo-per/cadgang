@@ -14,6 +14,7 @@
 
 import * as ops from './ops.js';
 import { q as queryRoot, topology, Query } from './query.js';
+import { Sketch } from './sketch.js';
 import { GraphError } from './errors.js';
 
 /** The `brep` namespace: primitives, booleans, modifiers, measures. */
@@ -31,6 +32,8 @@ const brep = Object.freeze({
   rotate: ops.rotate,
   scale: ops.scale,
   mirror: ops.mirror,
+  extrude: ops.extrude,
+  revolve: ops.revolve,
   volume: ops.volume,
   area: ops.area,
   bbox: ops.bbox,
@@ -81,16 +84,41 @@ const assert = Object.freeze({
  * keyed by cell id, for the cases where the flow branches and a prompt has to
  * name what it means.
  */
-export function cellApi({ params = {}, input = null, inputs = {}, selections = {} }) {
+export function cellApi({ params = {}, input = null, inputs = {}, selections = {}, sketch = null }) {
   return Object.freeze({
     p: Object.freeze({ ...params }),
     brep,
     q,
+    sk: sketchNamespace(params, sketch),
     assert,
     topology,
     input,
     inputs: Object.freeze({ ...inputs }),
     sel: selectionQueries(selections, input),
+  });
+}
+
+/**
+ * The `sk` namespace: 2D sketches under constraint.
+ *
+ * `sk.sketch()` is a fresh sketch bound to this cell's parameters, so a
+ * dimension written as `'width'` follows the slider. `sk.saved()` is the same
+ * sketch the person has been dragging in the canvas — the cell's stored
+ * `sketch` field. A program that calls it is saying the points are the human's
+ * to move, and the code's job is only to constrain and extrude them.
+ */
+function sketchNamespace(params, stored) {
+  return Object.freeze({
+    sketch: (data) => new Sketch({ ...(data || {}), params }),
+    saved: () => {
+      if (!stored) {
+        throw new GraphError(
+          'sk.saved(): this cell has no stored sketch. Build one with sk.sketch(), or draw one in the canvas.'
+        );
+      }
+      return new Sketch({ ...stored, params });
+    },
+    hasSaved: () => !!stored,
   });
 }
 

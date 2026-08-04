@@ -14,6 +14,7 @@
  */
 
 import * as THREE from 'three';
+import { sketchCanvas } from './sketchcanvas.js';
 
 const $ = (sel) => document.querySelector(sel);
 const API = '/api/cells';
@@ -228,6 +229,7 @@ viewport.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 function resize() {
+  for (const canvas of sketches.values()) canvas.redraw();
   const w = viewport.clientWidth, h = viewport.clientHeight;
   if (!w || !h) return;
   renderer.setSize(w, h);
@@ -255,6 +257,7 @@ function applyTheme() {
     dark ? 0x2c2b28 : 0xd8d7d3, dark ? 0x242320 : 0xe9e8e4);
   grid.rotation.x = Math.PI / 2; // cadgang is Z-up
   scene.add(grid);
+  for (const canvas of sketches.values()) canvas.redraw();
   key.intensity = dark ? 2.0 : 2.4;
   fill.intensity = dark ? 0.75 : 0.9;
   ambient.intensity = dark ? 0.5 : 1.15;
@@ -288,6 +291,7 @@ let report = new Map();   // cell id -> evaluation entry
 let structureSig = null;
 let lastMesh = null;      // the mesh currently in the viewport, for raycasting
 let pendingPicks = [];    // picks waiting on a human
+const sketches = new Map(); // cell id -> its mounted sketch canvas
 
 const badge = (status) => `<span class="badge ${status}">${status.replace('_', ' ')}</span>`;
 const fmt = (n) => (Math.abs(n) >= 1000 ? n.toFixed(0) : parseFloat(n.toPrecision(6)).toString());
@@ -301,6 +305,7 @@ const fmt = (n) => (Math.abs(n) >= 1000 ? n.toFixed(0) : parseFloat(n.toPrecisio
  */
 function renderStack() {
   const stack = $('#stack');
+  sketches.clear();
   $('#stackCount').textContent = doc.cells.length
     ? `${doc.cells.length} cell${doc.cells.length === 1 ? '' : 's'}`
     : '';
@@ -336,6 +341,7 @@ function renderStack() {
         <span class="cell-ms">${entry?.ms ? `${entry.ms}ms` : ''}</span>
       </div>
       <textarea class="cell-prompt" rows="2" placeholder="no prompt">${escapeHtml(cell.prompt || '')}</textarea>
+      ${cell.sketch ? '<div class="sketch-wrap"><canvas class="sketch-canvas"></canvas><div class="sketch-note"></div></div>' : ''}
       <div class="params"></div>
       ${cell.code ? '<button class="cell-toggle">Show code</button><pre class="cell-code" hidden></pre>' : ''}
       <div class="cell-meta"></div>
@@ -374,6 +380,23 @@ function renderStack() {
         pre.hidden = !pre.hidden;
         toggle.textContent = pre.hidden ? 'Show code' : 'Hide code';
       };
+    }
+
+    // A sketch cell gets its profile inline, under its own prompt. Dragging a
+    // point is the one authoring gesture this page has that Claude cannot do
+    // for you: the constraints are the model's, the pose is the human's.
+    const canvas = el.querySelector('.sketch-canvas');
+    if (canvas) {
+      sketches.set(cell.id, sketchCanvas({
+        sketch: cell.sketch,
+        canvas,
+        note: el.querySelector('.sketch-note'),
+        solve: (body) => api(`/${encodeURIComponent(cell.id)}/sketch/solve`, { method: 'POST', body }),
+        save: async (sketch) => {
+          await api(`/${encodeURIComponent(cell.id)}`, { method: 'PATCH', body: { sketch } });
+          await refresh({ structural: false });
+        },
+      }));
     }
 
     el.querySelector('.cell-id').onclick = async () => {
@@ -591,6 +614,12 @@ async function refresh({ structural = true } = {}) {
       const cell = doc.cells.find((c) => c.id === input.dataset.cell);
       const value = cell?.params?.[input.dataset.param];
       if (value !== undefined && String(value) !== input.value) input.value = value;
+    }
+    // A sketch dimension can read a parameter, so turning a knob moves the
+    // profile too. Re-solve it here rather than waiting for the next structural
+    // rebuild, or the canvas would disagree with the solid above it.
+    for (const [id, canvas] of sketches) {
+      canvas.refresh(doc.cells.find((c) => c.id === id)?.sketch);
     }
   }
 

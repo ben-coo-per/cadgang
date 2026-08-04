@@ -336,3 +336,55 @@ test('undo works through the API', async () => {
   await api('/undo', { method: 'POST' });
   assert.equal((await api('/document')).data.cells.length, before);
 });
+
+test('a sketch solves over HTTP without being saved', async () => {
+  const sketch = {
+    plane: 'XY',
+    points: [
+      { x: 0, y: 0, fixed: true },
+      { x: 18, y: 1 },
+      { x: 19, y: 11 },
+      { x: 1, y: 12 },
+    ],
+    entities: [
+      { type: 'line', a: 0, b: 1 },
+      { type: 'line', a: 1, b: 2 },
+      { type: 'line', a: 2, b: 3 },
+      { type: 'line', a: 3, b: 0 },
+    ],
+    constraints: [
+      { type: 'horizontal', e: 0 },
+      { type: 'vertical', e: 1 },
+      { type: 'horizontal', e: 2 },
+      { type: 'vertical', e: 3 },
+      { type: 'distance', e: 0, value: 'w' },
+    ],
+  };
+  let r = await api('/', {
+    method: 'POST',
+    body: {
+      id: 'drawn',
+      prompt: 'extrude the drawn profile',
+      code: 'export const params = { w: 20 };\nexport default ({ brep, sk }) => brep.extrude(sk.saved(), 5);',
+      sketch,
+    },
+  });
+  assert.equal(r.status, 200);
+
+  // Dragging the free corner sideways: the pinned width wins, so x stays 20
+  // while the height follows the hand.
+  r = await api('/drawn/sketch/solve', {
+    method: 'POST',
+    body: { sketch, move: { point: 2, x: 40, y: 30 } },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.report.converged, true);
+  assert.ok(Math.abs(r.data.sketch.points[1].x - 20) < 1e-6, 'the width dimension gave way');
+  assert.ok(r.data.sketch.points[2].y > 25, 'the free height did not follow the drag');
+  // The pin is a solve-time device, not a document edit.
+  assert.ok(!r.data.sketch.points[2].fixed);
+
+  // Nothing was persisted by solving.
+  const doc2 = await api('/document');
+  assert.equal(doc2.data.cells.find((c) => c.id === 'drawn').sketch.points[2].y, 11);
+});

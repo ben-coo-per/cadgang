@@ -165,6 +165,15 @@ model. Degrees of freedom are reported so the UI can show what's still floating.
 
 Output is a closed profile consumable by extrude, revolve, and sweep.
 
+Two properties of the solver as built are worth stating, because both are
+choices and not accidents. Tangency has two answers — the curve on either side
+of the line — and the one that is kept is the side the sketch was already on,
+so a drag cannot turn the geometry inside out on its way to a technically valid
+solution. And the reported degrees of freedom come from the rank of the
+Jacobian at the answer, which is honest everywhere except at a tangency, where
+the system is genuinely rank-deficient and the count reads one higher than a
+person would say. That is a property of tangency, not a bug to tune away.
+
 ## Assertion cells
 
 A model authored by a machine needs machine-checkable intent, or the user is
@@ -210,6 +219,15 @@ src/core/cells.js     cell document model, dirty tracking, evaluation order
    *Built* — `nearestTo()` in `query.js`, pick mode in the transcript, a
    `/pending` long poll, and `cadgang_cells_await_pick` / `cadgang_cells_pick`.
 4. **Sketch cells + solver + canvas.**
+   *Built* — `src/core/sketch.js` (Levenberg–Marquardt over residuals, numerical
+   Jacobian), `sk` in the cell API, `brep.extrude` / `brep.revolve`, and a canvas
+   in the transcript. Two things landed differently than sketched above. The
+   canvas is INLINE IN THE CELL CARD rather than a separate editing surface,
+   because what is being edited is the cell's 2D input and it has to sit next to
+   the parameters its dimensions read. And a drag re-solves on the SERVER
+   (`POST /:id/sketch/solve`, which deliberately does not persist) rather than
+   in a second copy of the solver in the browser — the round trip is cheap and
+   one solver is one thing to keep true.
 5. **Assertions + the verification loop.**
 6. **UI.** Cell stack replaces the node editor; graph becomes a derived view.
    *Transcript built* — `web/cells.html` at `/cells`: prompts in order, status

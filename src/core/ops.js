@@ -21,9 +21,13 @@ import {
   brepAttempt as attempt,
   trackBrepShape as track,
   brepKernel as kernelOf,
+  brepSketchLoops,
+  brepExtrude,
+  brepRevolve,
   requireSolid,
 } from './brep.js';
 import { Query } from './query.js';
+import { Sketch } from './sketch.js';
 
 /**
  * Turn a query into a replicad finder bound to `shape`.
@@ -156,6 +160,42 @@ export function scale(shape, factor, origin = [0, 0, 0]) {
 
 export function mirror(shape, plane = 'XY', origin = [0, 0, 0]) {
   return attempt('mirror', () => track(borrow(shape, 'shape').mirror(plane, origin)));
+}
+
+// -------------------------------------------------------------- sketch -> 3D
+
+/**
+ * Solve a sketch if it has not been solved, and hand back its profile.
+ *
+ * Solving on demand is deliberate: a cell program reads as "draw it, dimension
+ * it, extrude it", and forcing an explicit `.solve()` in the middle adds a step
+ * whose only job is to be forgotten. A sketch that was already solved is left
+ * alone, so a caller who wants to inspect degrees of freedom first still can.
+ */
+function profileOf(sketch, opName) {
+  if (!(sketch instanceof Sketch)) {
+    throw new GraphError(`${opName} needs a sketch — build one with sk.sketch()`);
+  }
+  if (!sketch.report) sketch.solve();
+  return { loops: sketch.loops(), plane: sketch.plane };
+}
+
+/**
+ * Extrude a solved sketch along its plane normal.
+ *
+ * `symmetric: true` centres the solid on the sketch plane instead of growing
+ * from it, and `offset` slides the profile along the normal before extruding —
+ * the two things a prompt asks for that a sketch's own plane cannot say.
+ */
+export function extrude(sketch, distance, { symmetric = false, offset = 0 } = {}) {
+  const { loops, plane } = profileOf(sketch, 'extrude');
+  return brepExtrude(brepSketchLoops(loops, plane, offset), distance, symmetric);
+}
+
+/** Revolve a solved sketch a full turn about an axis through the origin. */
+export function revolve(sketch, axis = [0, 0, 1], { offset = 0 } = {}) {
+  const { loops, plane } = profileOf(sketch, 'revolve');
+  return brepRevolve(brepSketchLoops(loops, plane, offset), axis);
 }
 
 // ----------------------------------------------------------------- measures

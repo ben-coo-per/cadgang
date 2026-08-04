@@ -19,6 +19,7 @@ import { evaluateCells, evaluationOrder, dependenciesOf, hasUnresolvedSelections
 import { compileCell } from '../core/sandbox.js';
 import { cellApi } from '../core/cellapi.js';
 import { topology, Query, enumerate, anchorFor } from '../core/query.js';
+import { solveWithDrag } from '../core/sketch.js';
 import * as ops from '../core/ops.js';
 import { meshingBounds } from '../core/sdf.js';
 import { meshStats } from '../core/mesher.js';
@@ -97,6 +98,28 @@ export function cellsRouter(doc, rootDir) {
 
   r.post('/:id/move', (req, res) => {
     try { res.json(doc.moveCell(req.params.id, req.body?.to)); } catch (e) { fail(res, e); }
+  });
+
+  /**
+   * Solve a cell's sketch, optionally with one point dragged.
+   *
+   * Deliberately does NOT persist. A drag fires this on every pointermove, and
+   * writing each intermediate pose into the document would fill undo with a
+   * hundred steps of one gesture. The client saves once, on release, with an
+   * ordinary PATCH.
+   *
+   * The solve runs against the cell's current parameters, so a dimension
+   * written as `'width'` means the same number here as it does when the cell
+   * evaluates — a sketch that dragged against different values than it builds
+   * with would be a different sketch.
+   */
+  r.post('/:id/sketch/solve', (req, res) => {
+    try {
+      const cell = doc.get(req.params.id);
+      const data = req.body?.sketch ?? cell.sketch;
+      if (!data) throw new GraphError(`Cell '${cell.id}' has no sketch`);
+      res.json(solveWithDrag(data, req.body?.move ?? null, cell.params || {}));
+    } catch (e) { fail(res, e); }
   });
 
   /**

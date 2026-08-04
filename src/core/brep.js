@@ -458,6 +458,45 @@ export function sketchProfile(plane, offset, points) {
   });
 }
 
+/**
+ * A drawing from solved sketch loops — the bridge out of the 2D solver.
+ *
+ * Loops arrive outermost first, so the first one is the boundary and the rest
+ * are cut out of it. Nesting deeper than that (an island inside a hole) is not
+ * distinguished: each further loop is cut, which for the common case of a plate
+ * with holes is right, and for an island would need a containment test that no
+ * prompt has asked for yet.
+ */
+export function brepSketchLoops(loops, plane, offset) {
+  const k = kernel();
+  if (!Array.isArray(loops) || !loops.length) {
+    throw new GraphError('A profile needs at least one closed loop');
+  }
+  return attempt('sketch profile', () => {
+    const drawn = loops.map((loop) => drawLoop(k, loop));
+    const outer = drawn.slice(1).reduce((d, hole) => d.cut(hole), drawn[0]);
+    return sketchValue(outer, plane, offset);
+  });
+}
+
+/** One closed loop as a replicad drawing: a circle, or a pen walked round it. */
+function drawLoop(k, loop) {
+  const segments = loop.segments || [];
+  if (segments.length === 1 && segments[0].type === 'circle') {
+    const [cx, cy] = segments[0].center;
+    return k.drawCircle(segments[0].radius).translate(cx, cy);
+  }
+  if (!segments.length) throw new GraphError('A profile loop has no segments');
+  let pen = k.draw(segments[0].from);
+  for (const s of segments) {
+    // Arcs go in as three points rather than centre-and-flag: the mid-point
+    // already encodes which way the arc bulges, so there is no orientation
+    // convention left to disagree about across the boundary.
+    pen = s.type === 'arc' ? pen.threePointsArcTo(s.to, s.mid) : pen.lineTo(s.to);
+  }
+  return pen.close();
+}
+
 // --------------------------------------------------------------- sketch -> 3D
 
 /**
