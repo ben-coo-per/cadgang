@@ -28,9 +28,16 @@ different part between two openings of the same file.
   "code": "…",                   // the committed program
   "compiledBy": "claude-opus-5", // provenance
   "compiledAt": "2026-08-03T…",
-  "status": "ok"                 // ok | stale | awaiting_pick | error
+  "status": "ok"                 // ok | stale | diverged | awaiting_pick
 }
 ```
+
+`status` records where the cell stands relative to its own prompt: `stale` means
+the prompt was edited past the code, `diverged` means the code was hand-edited
+past the prompt. Evaluation failure is deliberately *not* a status — a cell that
+throws is reported by the evaluator, not written back into the document, because
+persisting it would turn every viewport render of a broken model into a document
+write and fill undo with states the user never authored.
 
 Cells are ordered, not a free DAG. Natural language leans on a running current
 solid ("subtract that from the body"), so each cell's default input is the
@@ -56,8 +63,14 @@ export default ({ p, brep, q }) => {
 `params` is the ergonomic core: the model writes structure once, the human drives
 numbers forever. Changing `w` re-runs the program; it does not re-prompt.
 
-Programs run in a worker with no filesystem, network, or timer access, a wall
-clock budget, and a memory ceiling. The code is stored in the document in plain
+Programs run in a fresh `vm` realm with no filesystem, network, or timer access
+and a wall-clock budget. It is a guardrail against mistakes — an infinite loop, a
+stray file write — not a security boundary: the kernel functions passed in come
+from the host realm, and code written to escape through them will. That is the
+right trade while the OCCT instance lives in the main process, since shapes are
+not transferable and a worker would need a kernel of its own. If cell code ever
+comes from somewhere other than the user's own Claude Code session, this has to
+become a worker. The code is stored in the document in plain
 text, shown in the UI, and hand-editable — a hand edit simply marks the cell as
 diverged from its prompt.
 
@@ -171,8 +184,10 @@ src/core/cells.js     cell document model, dirty tracking, evaluation order
 ## Phases
 
 1. **Cell model + sandbox + API façade.** Cells compile, run, and produce shapes.
-   Migration path off `NODE_TYPES`.
+   *Built.* `cells.js`, `sandbox.js`, `cellapi.js`. Not yet wired to the server
+   or the MCP surface — `evaluateCells` is callable but nothing calls it.
 2. **Query layer + topology introspection.** The MCP surface that replaces vision.
+   *Query layer built* (`query.js`, `ops.js`); the introspection MCP call is not.
 3. **Selections + pick loop.** UI pick mode, anchors, stale detection.
 4. **Sketch cells + solver + canvas.**
 5. **Assertions + the verification loop.**
