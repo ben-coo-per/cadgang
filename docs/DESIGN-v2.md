@@ -263,13 +263,25 @@ src/core/cells.js     cell document model, dirty tracking, evaluation order
    `kind: 'assert'`, and export refusal. Self-intersection deliberately left
    out; see above.
 6. **UI.** Cell stack replaces the node editor; graph becomes a derived view.
-   *Transcript built* — `web/cells.html` at `/cells`: prompts in order, status
-   badges, scrubbable params, per-cell errors and logs, and the exact solid with
-   its real edges. It is a second page rather than a mode inside the v1 editor.
-   Still missing: pick mode, and the derived dependency graph view.
+   *Built* — the transcript, pick mode, sketch canvases, assertion readouts, and
+   the derived graph behind a DEPS toggle in the stack header. The graph is
+   computed SERVER-side (`GET /api/cells/graph`, `dependencyGraph()` in
+   cells.js) rather than in the browser, because `dependenciesOf` is the only
+   thing that knows what a cell's default input is — including that assertion
+   cells are not links in the chain — and a second copy of that rule in the
+   client would go stale the first time this one changed. It already has, twice.
+   `web/cells.html` at `/cells`: prompts in order, status badges, scrubbable
+   params, per-cell errors and logs, and the exact solid with its real edges. It
+   is a second page rather than a mode inside the v1 editor.
 
 Phases 1 and 2 are the ones that prove the thesis. If queries hold up under
 parameter change, the rest is construction.
+
+All six are now built. What the plan never covered, and what the next prompt
+that needs it should add: authoring sketch geometry from the canvas (today you
+drag points that already exist), sweep alongside extrude and revolve, nested
+loops in a profile (an island inside a hole is currently cut, not kept), and
+the in-app prompt box that has always been described as "later".
 
 ## Consequence of the MCP-driven choice
 

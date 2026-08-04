@@ -224,6 +224,7 @@ footer {
 /* The document's verdict, said once at the top rather than only in the cell
    that noticed — a refused export is a fact about the whole file. */
 #docWarn {
+  flex: 0 0 auto;
   margin: 0 0 var(--sp-2);
   padding: 6px var(--sp-2);
   border-left: 2px solid var(--signal-red);
@@ -231,3 +232,49 @@ footer {
   font-size: var(--fs-12); color: var(--ink);
 }
 #docWarn[hidden] { display: none; }
+
+/* --- derived dependency graph --------------------------------------------
+   Read-only on purpose. In v1 this graph WAS the document and every edge was
+   hand-wired; here the stack already says what depends on what, so this only
+   draws it — which is what lets it be a glance instead of a mode. */
+#graphPanel {
+  /* The panel is a flex column, so without this the graph is the thing that
+     gets squeezed when the stack is long — it would silently show its first
+     four cells and look like the whole document. It scrolls itself instead. */
+  flex: 0 0 auto; max-height: 40vh;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: var(--bw-hair) solid var(--rule);
+  overflow: auto;
+}
+#graphPanel[hidden] { display: none; }
+.graph-empty { font-size: var(--fs-12); color: var(--ink-faint); }
+
+.depgraph { display: block; font-family: var(--font-mono); }
+.depgraph .edge { fill: none; stroke: var(--rule); stroke-width: 1.5; }
+.depgraph .edge.trunk { stroke: var(--ink-soft); }
+/* An explicit ref is a decision someone made; the default "previous cell" is
+   not. Dashing the explicit one makes the reaching-back visible at a glance. */
+.depgraph .edge.explicit { stroke-dasharray: 3 3; }
+
+.depgraph .node { cursor: pointer; }
+.depgraph .node .dot { fill: var(--paper); stroke: var(--ink-faint); stroke-width: 1.5; }
+.depgraph .node.trunk .dot { stroke: var(--ink); }
+.depgraph .node .hit { fill: transparent; stroke: none; }
+.depgraph .node text { font-size: 11px; fill: var(--ink-soft); }
+.depgraph .node.trunk text { fill: var(--ink); }
+.depgraph .node:hover text { text-decoration: underline; }
+.depgraph .node.error .dot, .depgraph .node.failed .dot {
+  stroke: var(--signal-red); fill: var(--signal-red);
+}
+.depgraph .node.error text, .depgraph .node.failed text { fill: var(--signal-red); }
+.depgraph .node.stale .dot { stroke: #c98a1e; }
+.depgraph .node.awaiting_pick .dot { stroke: #8a5cb8; }
+
+/* The header is a space-between flex row, so a third child would push the
+   count into the middle. The button carries its own gap instead. */
+#graphToggle { padding: 2px 8px; font-size: 10px; margin-left: var(--sp-2); }
+#graphToggle.on { background: var(--ink); color: var(--paper); }
+
+/* Clicking a node in the graph should land you somewhere you can see. */
+.cell.flash { background: var(--paper-2); }
+.stack-head-right { display: flex; align-items: baseline; gap: var(--sp-2); }

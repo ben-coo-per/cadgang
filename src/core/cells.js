@@ -166,9 +166,19 @@ export class CellDocument {
     return cell;
   }
 
-  /** The cell geometry resolves to: the explicit output, else the last cell. */
+  /**
+   * The cell geometry resolves to: the explicit output, else the last cell
+   * that builds anything.
+   *
+   * Assertion cells are skipped. The natural place to put a check is at the
+   * bottom of the stack, and a document whose output was its own last check
+   * would be naming a pass-through as the thing it produces.
+   */
   get terminal() {
     if (this.output) return this.output;
+    for (let i = this.cells.length - 1; i >= 0; i--) {
+      if (this.cells[i].kind !== CELL_KIND.assert) return this.cells[i].id;
+    }
     return this.cells.length ? this.cells[this.cells.length - 1].id : null;
   }
 
@@ -497,14 +507,76 @@ export function evaluationOrder(doc, targetId) {
   const targetIndex = doc.indexOf(targetId);
   if (targetIndex < 0) throw new GraphError(`Cell '${targetId}' does not exist`);
   const needed = new Set([targetId]);
-  for (let i = 0; i <= targetIndex; i++) {
-    if (doc.cells[i].kind === CELL_KIND.assert) needed.add(doc.cells[i].id);
-  }
-  for (let i = targetIndex; i >= 0; i--) {
+  // An assertion cell is included when everything it asks about sits at or
+  // before the target — which is not the same as the CELL sitting before it.
+  // The natural place to write a check is at the bottom of the stack, past the
+  // last cell that builds anything, and bounding on the check's own position
+  // would skip exactly those.
+  doc.cells.forEach((cell, i) => {
+    if (cell.kind !== CELL_KIND.assert) return;
+    if (dependenciesOf(doc, i).every((d) => doc.indexOf(d) <= targetIndex)) needed.add(cell.id);
+  });
+  for (let i = doc.cells.length - 1; i >= 0; i--) {
     if (!needed.has(doc.cells[i].id)) continue;
     for (const dep of dependenciesOf(doc, i)) needed.add(dep);
   }
-  return doc.cells.slice(0, targetIndex + 1).filter((c) => needed.has(c.id));
+  return doc.cells.filter((c) => needed.has(c.id));
+}
+
+/**
+ * The dependency graph, derived rather than authored.
+ *
+ * v1's node graph was the document; here it is a read-only picture OF the
+ * document, and that is the whole point of deriving it here instead of in the
+ * browser: `dependenciesOf` is the one place that knows what "the previous
+ * result" means, including that assertion cells are not in the chain. A second
+ * copy of that rule in the client would be wrong the first time this one
+ * changed — which it already has, once.
+ *
+ * `lane` is the column to draw a cell in. The trunk — everything the output
+ * actually consumes — is lane 0. A cell off the trunk inherits its parent's
+ * lane if the parent is also off it, and otherwise opens a new one. Lanes are
+ * never reused: a document with many abandoned branches gets a wide picture,
+ * which is honest about what it is.
+ */
+export function dependencyGraph(doc, targetId = doc.terminal) {
+  if (!targetId) return { nodes: [], edges: [], target: null };
+  const targetIndex = doc.indexOf(targetId);
+  if (targetIndex < 0) throw new GraphError(`Cell '${targetId}' does not exist`);
+
+  // What the output consumes — NOT evaluationOrder, which deliberately also
+  // pulls in assertion cells nothing consumes.
+  const trunk = new Set([targetId]);
+  for (let i = targetIndex; i >= 0; i--) {
+    if (!trunk.has(doc.cells[i].id)) continue;
+    for (const dep of dependenciesOf(doc, i)) trunk.add(dep);
+  }
+
+  const lanes = new Map();
+  let widest = 0;
+  const edges = [];
+  const nodes = doc.cells.map((cell, i) => {
+    const deps = dependenciesOf(doc, i);
+    for (const dep of deps) edges.push({ from: dep, to: cell.id, explicit: Boolean(cell.refs?.length) });
+
+    let lane = 0;
+    if (!trunk.has(cell.id)) {
+      const parent = deps.map((d) => lanes.get(d)).find((l) => l > 0);
+      lane = parent ?? ++widest;
+    }
+    lanes.set(cell.id, lane);
+    return {
+      id: cell.id,
+      index: i,
+      kind: cell.kind || CELL_KIND.model,
+      lane,
+      onTrunk: trunk.has(cell.id),
+      isOutput: cell.id === targetId,
+      deps,
+    };
+  });
+
+  return { nodes, edges, target: targetId, lanes: widest + 1 };
 }
 
 /** Compiled programs, keyed by source text — a param drag must not recompile. */

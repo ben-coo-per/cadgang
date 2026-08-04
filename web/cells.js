@@ -15,6 +15,7 @@
 
 import * as THREE from 'three';
 import { sketchCanvas } from './sketchcanvas.js';
+import { renderDepGraph } from './depgraph.js';
 
 const $ = (sel) => document.querySelector(sel);
 const API = '/api/cells';
@@ -597,6 +598,45 @@ function escapeHtml(s) {
   return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
 
+// -------------------------------------------------------------- graph view
+
+/**
+ * The derived DAG, shown on demand.
+ *
+ * Hidden by default and remembered per browser: the stack IS the document, and
+ * for the straight-line case the graph says nothing the list does not. It earns
+ * its place the moment a cell reaches back past its neighbour.
+ */
+let graphOpen = localStorage.getItem('cadgang-cells-graph') === '1';
+
+async function renderGraph() {
+  const panel = $('#graphPanel');
+  panel.hidden = !graphOpen;
+  $('#graphToggle').classList.toggle('on', graphOpen);
+  if (!graphOpen || !doc.cells.length) return;
+  try {
+    const graph = await api('/graph');
+    renderDepGraph(panel, {
+      graph,
+      status: new Map(doc.cells.map((c) => [c.id, shownStatus(c, report.get(c.id))])),
+      onSelect: (id) => {
+        const el = document.querySelector(`.cell[data-id="${id}"]`);
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el?.classList.add('flash');
+        setTimeout(() => el?.classList.remove('flash'), 900);
+      },
+    });
+  } catch (e) {
+    panel.innerHTML = '';
+  }
+}
+
+$('#graphToggle').onclick = () => {
+  graphOpen = !graphOpen;
+  localStorage.setItem('cadgang-cells-graph', graphOpen ? '1' : '0');
+  renderGraph();
+};
+
 // ------------------------------------------------------------------ refresh
 
 /**
@@ -659,6 +699,8 @@ async function refresh({ structural = true } = {}) {
       canvas.refresh(doc.cells.find((c) => c.id === id)?.sketch);
     }
   }
+
+  await renderGraph();
 
   // A failed assertion is a property of the DOCUMENT, so it is said once at the
   // top of the stack rather than only inside the cell that noticed.

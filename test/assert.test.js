@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { initBrep, beginBrepScope } from '../src/core/brep.js';
-import { CellDocument, evaluateCells, CELL_KIND } from '../src/core/cells.js';
+import { CellDocument, evaluateCells, dependencyGraph, CELL_KIND } from '../src/core/cells.js';
 import * as checks from '../src/core/checks.js';
 import * as ops from '../src/core/ops.js';
 import { q } from '../src/core/query.js';
@@ -287,5 +287,51 @@ test('an assertion cell is transparent to the running "that"', () => {
     const run = evaluateCells(doc, 'after');
     assert.equal(run.assertionsPass, true);
     near(ops.volume(run.value), 40 * 40 * 40, 1e-6);
+  });
+});
+
+test('the dependency graph is derived, and knows checks are not links', () => {
+  const doc = new CellDocument();
+  doc.addCell({ id: 'body', prompt: 'box', code: 'export default ({ brep }) => brep.box(10, 10, 10);' });
+  doc.addCell({
+    id: 'check', prompt: 'watertight', kind: 'assert',
+    code: 'export default ({ assert, input }) => assert.watertight(input);',
+  });
+  doc.addCell({ id: 'lift', prompt: 'raise it', code: 'export default ({ brep, input }) => brep.translate(input, [0, 0, 5]);' });
+  doc.addCell({ id: 'spare', prompt: 'an abandoned experiment', refs: ['body'], code: 'export default ({ brep, input }) => brep.scale(input, 2);' });
+
+  const g = dependencyGraph(doc, 'lift');
+  const lane = Object.fromEntries(g.nodes.map((n) => [n.id, n.lane]));
+  const trunk = g.nodes.filter((n) => n.onTrunk).map((n) => n.id);
+
+  // 'lift' takes its input from 'body': the check between them is not a link.
+  assert.deepEqual(g.nodes.find((n) => n.id === 'lift').deps, ['body']);
+  assert.deepEqual(trunk, ['body', 'lift']);
+  assert.equal(lane.body, 0);
+  assert.equal(lane.lift, 0);
+  // The check and the abandoned branch each get a lane of their own.
+  assert.ok(lane.check > 0, 'an assertion cell hangs off the trunk');
+  assert.ok(lane.spare > 0 && lane.spare !== lane.check, 'a side branch gets its own lane');
+  assert.ok(g.edges.some((e) => e.from === 'body' && e.to === 'check'));
+  assert.equal(g.nodes.find((n) => n.id === 'lift').isOutput, true);
+});
+
+test('a check written below the last modelling cell still runs', () => {
+  const doc = new CellDocument();
+  doc.addCell({ id: 'body', prompt: 'thin plate', code: 'export default ({ brep }) => brep.box(60, 40, 1);' });
+  // The natural place to write a check: at the bottom, past everything that
+  // builds. The output resolves to 'body', so bounding assertion inclusion on
+  // the check's own position would skip exactly this case.
+  doc.addCell({
+    id: 'thick', prompt: 'at least 5mm', kind: 'assert',
+    code: 'export default ({ assert, input }) => assert.minWall(input, 5);',
+  });
+
+  assert.equal(doc.terminal, 'body', 'the output is the last cell that builds something');
+  inScope(() => {
+    const run = evaluateCells(doc, doc.terminal);
+    assert.equal(run.assertionsPass, false);
+    assert.equal(run.assertions[0].cell, 'thick');
+    assert.ok(run.value, 'and the geometry is still the body');
   });
 });

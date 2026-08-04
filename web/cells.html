@@ -34,8 +34,12 @@
     <aside id="panel">
       <div id="stackHead">
         <span class="stack-label">CELL STACK</span>
-        <span id="stackCount" class="stack-count"></span>
+        <span class="stack-head-right">
+          <span id="stackCount" class="stack-count"></span>
+          <button id="graphToggle" class="ghost" title="Show the derived dependency graph">DEPS</button>
+        </span>
       </div>
+      <div id="graphPanel" hidden></div>
       <div id="docWarn" hidden></div>
       <div id="stack"></div>
       <div class="stack-hint">

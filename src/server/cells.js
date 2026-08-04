@@ -15,7 +15,9 @@ import path from 'node:path';
 import fs from 'node:fs';
 import express from 'express';
 import { GraphError } from '../core/errors.js';
-import { evaluateCells, evaluationOrder, dependenciesOf, hasUnresolvedSelections } from '../core/cells.js';
+import {
+  evaluateCells, evaluationOrder, dependenciesOf, dependencyGraph, hasUnresolvedSelections,
+} from '../core/cells.js';
 import { compileCell } from '../core/sandbox.js';
 import { cellApi } from '../core/cellapi.js';
 import { topology, Query, enumerate, anchorFor } from '../core/query.js';
@@ -95,6 +97,20 @@ export function cellsRouter(doc, rootDir) {
   // ------------------------------------------------------------------ document
 
   r.get('/document', (req, res) => res.json(state()));
+
+  /**
+   * The dependency DAG, derived from the stack.
+   *
+   * v1's node graph was the document; this is a picture of one. It is computed
+   * here rather than in the browser because `dependenciesOf` is the only thing
+   * that knows what a cell's default input is — a second copy of that rule in
+   * the client would go stale the first time this one changed.
+   */
+  r.get('/graph', (req, res) => {
+    try {
+      res.json({ revision: doc.revision, ...dependencyGraph(doc, req.query.cell || doc.terminal) });
+    } catch (e) { fail(res, e); }
+  });
 
   r.post('/', (req, res) => {
     try { res.json(doc.addCell(req.body || {})); } catch (e) { fail(res, e); }
