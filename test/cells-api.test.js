@@ -388,3 +388,37 @@ test('a sketch solves over HTTP without being saved', async () => {
   const doc2 = await api('/document');
   assert.equal(doc2.data.cells.find((c) => c.id === 'drawn').sketch.points[2].y, 11);
 });
+
+test('a failing assertion refuses the export but not the viewport', async () => {
+  let r = await api('/', {
+    method: 'POST',
+    body: {
+      id: 'toothin', prompt: 'nothing under 50mm thick', kind: 'assert',
+      code: 'export const params = { minimum: 50 };\nexport default ({ p, assert, input }) => assert.minWall(input, p.minimum);',
+    },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.kind, 'assert');
+
+  r = await api('/evaluate?stopOnError=0');
+  assert.equal(r.data.assertionsPass, false);
+  const failed = r.data.assertions.find((c) => !c.ok);
+  assert.equal(failed.cell, 'toothin');
+  assert.equal(failed.label, 'min wall');
+
+  // The part still renders — looking at it is how you fix it.
+  r = await api('/mesh');
+  assert.equal(r.status, 200);
+
+  // It just does not ship.
+  for (const route of ['/export/stl', '/export/step']) {
+    const bad = await api(route);
+    assert.equal(bad.status, 400, `${route} should refuse`);
+    assert.match(bad.data.error, /Refusing to export/);
+    assert.match(bad.data.error, /min wall/);
+  }
+
+  await api('/toothin', { method: 'DELETE' });
+  const ok = await api('/export/stl');
+  assert.equal(ok.status, 200, 'removing the assertion is the explicit escape hatch');
+});

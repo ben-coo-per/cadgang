@@ -188,6 +188,34 @@ They evaluate on every recompile and on every parameter change, and they fail
 the document, not just a cell. During authoring they close the loop: Claude
 compiles, renders, checks assertions, and iterates until they pass.
 
+As built, three decisions give "fails the document" its teeth.
+
+An assertion cell is **transparent to the stack**: it passes its input through
+and is skipped when the cell below it works out what "the previous result"
+means. A check that redirected the model would not be a check.
+
+It runs **even when nothing consumes it**. The ordinary rule is that a branch
+the output does not use is not evaluated, and a check is by nature consumed by
+nothing — so assertion cells at or before the target are always in the
+evaluation order, dragging their own dependencies with them.
+
+And the refusal lands **at export, not at render**. A document with a failing
+assertion still builds, still measures, still answers topology questions,
+because looking at the part is how anyone fixes a wall that is too thin. What it
+does not do is leave the building: STEP and STL refuse. The escape hatch is
+deleting the assertion cell — an edit the document records — rather than a flag
+on a URL, which it would not.
+
+Every claim MEASURES and records the number whether it passes or fails, so the
+transcript reads "min wall 1.99 mm vs 2.5" rather than showing a red tick. A
+passing assertion that left nothing behind would be indistinguishable from an
+assertion nobody wrote.
+
+Self-intersection is the one item on the list above that is NOT implemented. A
+real check needs a boolean-operation validity pass; a cheap one would pass on
+everything, and a check that cannot fail is worse than no check, because it
+reads as coverage.
+
 ## What survives
 
 The entire kernel. `brep.js`, `sdf.js`, `mesher.js`, `step.js`, `stl.js`,
@@ -229,6 +257,11 @@ src/core/cells.js     cell document model, dirty tracking, evaluation order
    in a second copy of the solver in the browser — the round trip is cheap and
    one solver is one thing to keep true.
 5. **Assertions + the verification loop.**
+   *Built* — `src/core/checks.js` (ray-cast minimum wall thickness over a BVH,
+   exact face-to-face clearance via OCCT, watertightness of the mesh that would
+   ship), the `assert` namespace recording into the evaluation report, cell
+   `kind: 'assert'`, and export refusal. Self-intersection deliberately left
+   out; see above.
 6. **UI.** Cell stack replaces the node editor; graph becomes a derived view.
    *Transcript built* — `web/cells.html` at `/cells`: prompts in order, status
    badges, scrubbable params, per-cell errors and logs, and the exact solid with

@@ -43,6 +43,27 @@ export const CELL_STATUS = Object.freeze({
   awaitingPick: 'awaiting_pick',  // declares a selection the user has not made
 });
 
+/**
+ * What a cell is for.
+ *
+ * An assertion cell is a first-class member of the stack rather than a comment
+ * or a test file, because the claim has to re-run on every parameter change —
+ * and the moment it stops being part of the document is the moment it stops
+ * being true.
+ */
+export const CELL_KIND = Object.freeze({
+  model: 'model',    // builds geometry; its result feeds the next cell
+  assert: 'assert',  // measures the geometry and passes it through unchanged
+});
+
+function validateKind(kind) {
+  const k = String(kind ?? CELL_KIND.model);
+  if (!Object.values(CELL_KIND).includes(k)) {
+    throw new GraphError(`Cell kind '${kind}' must be one of: ${Object.values(CELL_KIND).join(', ')}`);
+  }
+  return k;
+}
+
 function validateId(id) {
   if (!CELL_ID.test(String(id ?? ''))) {
     throw new GraphError(`Cell id '${id}' must match ${CELL_ID} — it is used as a reference name`);
@@ -97,7 +118,10 @@ export class CellDocument {
       try {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
         this.revision = data.revision ?? 0;
-        this.cells = Array.isArray(data.cells) ? data.cells : [];
+        // A document written before assertion cells existed has no `kind`;
+        // everything in it modelled, so that is what it becomes.
+        this.cells = (Array.isArray(data.cells) ? data.cells : [])
+          .map((c) => ({ kind: CELL_KIND.model, ...c }));
         this.output = data.output ?? null;
         this._counter = data.counter ?? this.cells.length;
       } catch {
@@ -222,7 +246,7 @@ export class CellDocument {
    */
   addCell({
     id, prompt = '', code = null, params, refs = [], selections, sketch = null,
-    compiledBy = null, at = null,
+    kind = CELL_KIND.model, compiledBy = null, at = null,
   } = {}) {
     const cellId = id ? validateId(id) : `cell_${this._counter + 1}`;
     if (this.indexOf(cellId) >= 0) throw new GraphError(`Cell id '${cellId}' already exists`);
@@ -237,6 +261,7 @@ export class CellDocument {
     this._counter++;
     const cell = {
       id: cellId,
+      kind: validateKind(kind),
       prompt: String(prompt ?? ''),
       refs: cleanRefs,
       selections: cleanSelections,
@@ -260,7 +285,7 @@ export class CellDocument {
    * `stale`; a code edit makes it `diverged`; a parameter change does neither,
    * because turning a knob is not a change of intent.
    */
-  updateCell(id, { prompt, code, params, refs, selections, sketch } = {}) {
+  updateCell(id, { prompt, code, params, refs, selections, sketch, kind } = {}) {
     const cell = this.get(id);
     const index = this.indexOf(id);
     const cleanRefs = refs !== undefined ? this._validateRefs(refs, index, id) : null;
@@ -280,12 +305,13 @@ export class CellDocument {
 
     // A slider dragging one parameter should be one undo step, not fifty.
     const onlyParams = params !== undefined &&
-      [prompt, code, refs, selections, sketch].every((v) => v === undefined);
+      [prompt, code, refs, selections, sketch, kind].every((v) => v === undefined);
     this._pushUndo(onlyParams ? `params:${id}:${Object.keys(cleanParams).sort().join(',')}` : null);
 
     if (cleanRefs) cell.refs = cleanRefs;
     if (cleanSelections) cell.selections = cleanSelections;
     if (sketch !== undefined) cell.sketch = sketch;
+    if (kind !== undefined) cell.kind = validateKind(kind);
     if (declared) cell.params = { ...declared, ...cell.params };
     if (cleanParams) cell.params = { ...cell.params, ...cleanParams };
 
@@ -443,7 +469,14 @@ function clampIndex(value, max) {
 export function dependenciesOf(doc, index) {
   const cell = doc.cells[index];
   if (cell.refs?.length) return [...cell.refs];
-  return index > 0 ? [doc.cells[index - 1].id] : [];
+  // Walk back past assertion cells. A check is not a step in the model, so it
+  // must not become a link in the chain — otherwise inserting one would make
+  // every cell below it depend on what the check happened to be about, and a
+  // check that changes the model is not a check.
+  for (let i = index - 1; i >= 0; i--) {
+    if (doc.cells[i].kind !== CELL_KIND.assert) return [doc.cells[i].id];
+  }
+  return [];
 }
 
 /**
@@ -451,11 +484,22 @@ export function dependenciesOf(doc, index) {
  *
  * A branch the target does not consume is skipped: a document whose tail is an
  * abandoned experiment should not pay for it on every parameter drag.
+ *
+ * Assertion cells are the exception, and they have to be. A check is not
+ * consumed by anything — that is its nature — so under the rule above a check
+ * written as a side branch would quietly never run, and "assertions fail the
+ * document" would be false exactly when it mattered. Every assertion cell at or
+ * before the target runs, and drags its own dependencies in with it. An
+ * assertion cell AFTER the target does not: it is asking about geometry that
+ * this evaluation is not producing.
  */
 export function evaluationOrder(doc, targetId) {
   const targetIndex = doc.indexOf(targetId);
   if (targetIndex < 0) throw new GraphError(`Cell '${targetId}' does not exist`);
   const needed = new Set([targetId]);
+  for (let i = 0; i <= targetIndex; i++) {
+    if (doc.cells[i].kind === CELL_KIND.assert) needed.add(doc.cells[i].id);
+  }
   for (let i = targetIndex; i >= 0; i--) {
     if (!needed.has(doc.cells[i].id)) continue;
     for (const dep of dependenciesOf(doc, i)) needed.add(dep);
@@ -501,7 +545,10 @@ export function evaluateCells(doc, targetId = doc.terminal, { stopOnError = true
 
   for (const cell of order) {
     const index = doc.indexOf(cell.id);
-    const entry = { id: cell.id, status: 'ok', error: null, logs: [], ms: 0 };
+    const entry = {
+      id: cell.id, kind: cell.kind || CELL_KIND.model,
+      status: 'ok', error: null, logs: [], checks: [], ms: 0,
+    };
     report.push(entry);
 
     if (cell.code == null) {
@@ -525,31 +572,62 @@ export function evaluateCells(doc, targetId = doc.terminal, { stopOnError = true
     const input = cell.refs?.length ? inputs[cell.refs[0]] : previous;
 
     const started = Date.now();
+    const asserting = cell.kind === CELL_KIND.assert;
     try {
       const compiled = compiledFor(cell);
       const value = compiled.run(cellApi({
         params: cell.params, input, inputs, selections: cell.selections, sketch: cell.sketch,
+        checked: entry.checks,
       }));
       entry.logs = compiled.logs.map((l) => ({ ...l }));
-      results.set(cell.id, checkCellResult(value, cell.id));
-      previous = results.get(cell.id);
-      lastGood = cell.id;
+      // An assertion cell measures; it does not model. Its result is whatever
+      // came in, so a check can be dropped anywhere in the stack without
+      // becoming a link in the chain that later cells depend on.
+      results.set(cell.id, asserting ? input : checkCellResult(value, cell.id));
+      // An assertion cell is TRANSPARENT to the running "that": it does not
+      // become the previous result, so the next cell sees what it would have
+      // seen if the check were not there. Otherwise dropping a check into the
+      // middle of a stack would redirect everything below it — and a check
+      // that changes the model is not a check.
+      if (!asserting) {
+        previous = results.get(cell.id);
+        lastGood = cell.id;
+      }
     } catch (err) {
       // A lost pick is not a bug in the code — it is a question only the human
       // can answer, so it reports as awaiting_pick and the UI offers a re-pick
       // rather than showing a modelling error nobody can act on.
-      entry.status = err.repick ? 'awaiting_pick' : 'error';
+      entry.status = err.repick ? 'awaiting_pick' : asserting ? 'failed' : 'error';
       entry.error = err.message;
-      if (stopOnError) throw err instanceof GraphError ? err : new GraphError(err.message);
+      // A failed assertion fails the DOCUMENT, not the stack. Stopping here
+      // would hide the geometry that the check is about — and looking at the
+      // part is the first thing anyone does when told a wall is too thin. So
+      // the shape passes through, later cells still build, and the refusal
+      // happens where it has teeth: at export.
+      if (asserting) {
+        results.set(cell.id, input);
+      } else if (stopOnError) {
+        throw err instanceof GraphError ? err : new GraphError(err.message);
+      }
     } finally {
       entry.ms = Date.now() - started;
     }
   }
 
+  // Every check every cell made, in stack order. Assertion cells are the usual
+  // source, but a modelling cell that states its own intent with assert.* lands
+  // here too — the distinction is where the claim is written, not how it counts.
+  const assertions = report.flatMap((e) =>
+    e.checks.map((c) => ({ cell: e.id, ...c })));
+
   return {
     value: results.get(targetId) ?? null,
     results,
     report,
+    assertions,
+    // The one flag exports look at. A document with a failed assertion still
+    // renders; it just does not ship.
+    assertionsPass: assertions.every((c) => c.ok),
     target: targetId,
     // The deepest cell that actually produced a shape. When the newest cell is
     // broken — the normal state mid-edit — this is what the viewport should

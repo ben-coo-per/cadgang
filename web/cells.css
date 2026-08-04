@@ -192,3 +192,42 @@ footer {
   font-variant-numeric: tabular-nums;
 }
 .sketch-note.err { color: var(--signal-red); }
+
+/* --- assertion cells -----------------------------------------------------
+   A check reads differently from a modelling step, so it looks different: no
+   step number, a rule down the left, and the measurements laid out as a small
+   table. What it is NOT is an error state — a passing assertion is the normal
+   case and should look calm. */
+.badge.failed { color: var(--signal-red); }
+
+.cell.assert { border-left: 2px solid var(--rule); padding-left: var(--sp-2); }
+.cell.assert.missed { border-left-color: var(--signal-red); }
+.cell.assert .cell-index { color: var(--ink-faint); }
+
+.checks:empty { display: none; }
+.checks {
+  margin: var(--sp-2) 0;
+  font-size: var(--fs-12); font-variant-numeric: tabular-nums;
+}
+.check {
+  display: grid; grid-template-columns: 14px 1fr auto auto; gap: 8px;
+  align-items: baseline; padding: 2px 0;
+  border-bottom: var(--bw-hair) solid var(--rule-soft);
+}
+.check:last-child { border-bottom: 0; }
+.check-mark { color: var(--ink-faint); }
+.check-label { color: var(--ink-soft); }
+.check-value { font-weight: 700; }
+.check-limit { color: var(--ink-faint); }
+.check.bad .check-mark, .check.bad .check-value { color: var(--signal-red); }
+
+/* The document's verdict, said once at the top rather than only in the cell
+   that noticed — a refused export is a fact about the whole file. */
+#docWarn {
+  margin: 0 0 var(--sp-2);
+  padding: 6px var(--sp-2);
+  border-left: 2px solid var(--signal-red);
+  background: var(--paper-2);
+  font-size: var(--fs-12); color: var(--ink);
+}
+#docWarn[hidden] { display: none; }

@@ -15,6 +15,7 @@
 import * as ops from './ops.js';
 import { q as queryRoot, topology, Query } from './query.js';
 import { Sketch } from './sketch.js';
+import * as checks from './checks.js';
 import { GraphError } from './errors.js';
 
 /** The `brep` namespace: primitives, booleans, modifiers, measures. */
@@ -46,35 +47,99 @@ const q = Object.freeze({
 });
 
 /**
- * Assertions available to a program directly, so a cell can state its own
- * intent — "this must stay one solid", "this must be under 40cc" — without
- * waiting for the assertion-cell phase.
+ * The `assert` namespace: claims a cell makes about the part.
+ *
+ * Every one MEASURES first and records the number, then throws if the number
+ * misses. Recording on the way past is the whole design: a passing assertion
+ * that leaves nothing behind is indistinguishable from an assertion nobody
+ * wrote, and "min wall 1.84 ≥ 1.5" in the transcript is worth more than a green
+ * tick. The record is kept even on failure, so the reader sees how far off it
+ * was rather than only that it was.
+ *
+ * `sink` is the array the evaluator hands in to collect them.
  */
-const assert = Object.freeze({
-  ok(condition, message) {
-    if (!condition) throw new GraphError(message || 'Assertion failed');
-  },
-  volumeUnder(shape, limit) {
-    const v = ops.volume(shape);
-    if (!(v < limit)) throw new GraphError(`Volume ${v.toFixed(2)} is not under ${limit}`);
-    return v;
-  },
-  volumeOver(shape, limit) {
-    const v = ops.volume(shape);
-    if (!(v > limit)) throw new GraphError(`Volume ${v.toFixed(2)} is not over ${limit}`);
-    return v;
-  },
-  fitsIn(shape, [x, y, z]) {
-    const { size } = ops.bbox(shape);
-    const over = size.map((s, i) => s - [x, y, z][i]).findIndex((d) => d > 1e-9);
-    if (over >= 0) {
-      throw new GraphError(
-        `Bounding box ${size.map((s) => s.toFixed(2)).join(' × ')} exceeds ${[x, y, z].join(' × ')} on ${'XYZ'[over]}`
-      );
-    }
-    return size;
-  },
-});
+function assertions(sink) {
+  const record = ({ label, ok, value, limit, unit = 'mm', detail = null, message }) => {
+    sink.push({ label, ok, value, limit, unit, detail });
+    if (!ok) throw new GraphError(message);
+    return value;
+  };
+  const round = (v) => (Number.isFinite(v) ? Number(v.toFixed(4)) : v);
+
+  return Object.freeze({
+    ok(condition, message) {
+      return record({
+        label: message || 'assertion',
+        ok: Boolean(condition),
+        value: null,
+        limit: null,
+        unit: null,
+        message: message || 'Assertion failed',
+      });
+    },
+
+    volumeUnder(shape, limit) {
+      const v = ops.volume(shape);
+      return record({
+        label: 'volume under', ok: v < limit, value: round(v), limit, unit: 'mm³',
+        message: `Volume ${v.toFixed(2)} mm³ is not under ${limit} mm³`,
+      });
+    },
+
+    volumeOver(shape, limit) {
+      const v = ops.volume(shape);
+      return record({
+        label: 'volume over', ok: v > limit, value: round(v), limit, unit: 'mm³',
+        message: `Volume ${v.toFixed(2)} mm³ is not over ${limit} mm³`,
+      });
+    },
+
+    fitsIn(shape, [x, y, z]) {
+      const { size } = ops.bbox(shape);
+      const over = size.map((s, i) => s - [x, y, z][i]).findIndex((d) => d > 1e-9);
+      record({
+        label: 'fits in', ok: over < 0, value: size.map(round), limit: [x, y, z], unit: 'mm',
+        message: over < 0 ? '' :
+          `Bounding box ${size.map((s) => s.toFixed(2)).join(' × ')} exceeds ${[x, y, z].join(' × ')} on ${'XYZ'[over]}`,
+      });
+      return size;
+    },
+
+    /** The thinnest wall anywhere on the solid must be at least `limit`. */
+    minWall(shape, limit, options) {
+      const t = checks.minWallThickness(shape, options);
+      return record({
+        label: 'min wall', ok: t.value >= limit, value: round(t.value), limit, unit: 'mm',
+        detail: { at: t.at?.map(round), samples: t.samples },
+        message: `Thinnest wall is ${t.value.toFixed(3)} mm, under the ${limit} mm minimum` +
+          (t.at ? ` (near ${t.at.map((c) => c.toFixed(1)).join(', ')})` : ''),
+      });
+    },
+
+    /** Two sets of faces or edges must stay at least `limit` apart. */
+    clearance(shape, a, b, limit) {
+      const c = checks.clearance(shape, a, b);
+      return record({
+        label: 'clearance', ok: c.value >= limit, value: round(c.value), limit, unit: 'mm',
+        message: `Clearance is ${c.value.toFixed(3)} mm, under the ${limit} mm minimum`,
+      });
+    },
+
+    /** The mesh that would be exported must be closed. */
+    watertight(shape) {
+      const w = checks.watertight(shape);
+      return record({
+        label: 'watertight', ok: w.ok, value: w.ok ? 'closed' : 'open', limit: 'closed', unit: null,
+        detail: { boundary: w.boundary, nonManifold: w.nonManifold, flipped: w.flipped },
+        message: `Mesh is not closed: ${w.boundary} boundary edge${w.boundary === 1 ? '' : 's'}, ` +
+          `${w.nonManifold} non-manifold, ${w.flipped} inconsistently wound`,
+      });
+    },
+  });
+}
+
+/** The bare namespace, for callers with nowhere to record to (tests, v1). */
+const assert = assertions([]);
 
 /**
  * Build the argument object for one cell's program.
@@ -84,13 +149,15 @@ const assert = Object.freeze({
  * keyed by cell id, for the cases where the flow branches and a prompt has to
  * name what it means.
  */
-export function cellApi({ params = {}, input = null, inputs = {}, selections = {}, sketch = null }) {
+export function cellApi({
+  params = {}, input = null, inputs = {}, selections = {}, sketch = null, checked = [],
+}) {
   return Object.freeze({
     p: Object.freeze({ ...params }),
     brep,
     q,
     sk: sketchNamespace(params, sketch),
-    assert,
+    assert: assertions(checked),
     topology,
     input,
     inputs: Object.freeze({ ...inputs }),

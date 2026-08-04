@@ -189,6 +189,93 @@ function closestOnTriangle(px, py, pz, ax, ay, az, bx, by, bz, cx, cy, cz, out) 
  *
  * Returns { normal, bbox(d), compile(d) -> (x,y,z)=>sd }.
  */
+/**
+ * Compile a triangle soup into a first-hit ray caster over the same BVH.
+ *
+ * Wall-thickness and clearance checks are ray questions, not nearest-surface
+ * questions: "starting here and heading that way, how far until I leave the
+ * material?" Answering them by marching the signed distance field converges
+ * slowly wherever another surface is close by — exactly at the rims and
+ * corners a thickness check cares most about — and a march that runs out of
+ * steps reports a distance SHORTER than the truth, which reads as a wall
+ * failure that is not there. An exact cast has no such failure mode.
+ */
+export function buildMeshRaycaster(positions, indices, triStart = 0, triCount = indices.length / 3) {
+  if (triCount <= 0) throw new Error('buildMeshRaycaster: empty triangle range');
+  const { nodes, order } = buildBVH(positions, indices, triStart, triCount);
+
+  /** Distance along (dx,dy,dz) to the first triangle hit, or Infinity. */
+  function cast(ox, oy, oz, dx, dy, dz, tMin = 1e-9, tMax = Infinity) {
+    const inv = [1 / dx, 1 / dy, 1 / dz];
+    const o = [ox, oy, oz];
+    let best = tMax;
+    const stack = [0];
+    while (stack.length) {
+      const node = nodes[stack.pop()];
+      if (!slabHit(node.min, node.max, o, inv, tMin, best)) continue;
+      if (node.left < 0) {
+        for (let i = node.start; i < node.start + node.count; i++) {
+          const tri = order[i];
+          const t = mollerTrumbore(
+            positions, indices, tri, ox, oy, oz, dx, dy, dz, tMin, best
+          );
+          if (t < best) best = t;
+        }
+      } else {
+        stack.push(node.left, node.right);
+      }
+    }
+    return best;
+  }
+
+  return { cast };
+}
+
+/** Slab test: does the ray meet this box within (tMin, tMax)? */
+function slabHit(min, max, o, inv, tMin, tMax) {
+  let lo = tMin;
+  let hi = tMax;
+  for (let j = 0; j < 3; j++) {
+    let t1 = (min[j] - o[j]) * inv[j];
+    let t2 = (max[j] - o[j]) * inv[j];
+    if (t1 > t2) { const s = t1; t1 = t2; t2 = s; }
+    // A ray parallel to an axis gives ±Infinity here, which compares correctly
+    // unless the origin is exactly on the slab and produces NaN — hence the
+    // explicit guards rather than plain min/max.
+    if (t1 === t1 && t1 > lo) lo = t1;
+    if (t2 === t2 && t2 < hi) hi = t2;
+    if (lo > hi) return false;
+  }
+  return true;
+}
+
+/** Möller–Trumbore, both faces, returning t or Infinity. */
+function mollerTrumbore(positions, indices, tri, ox, oy, oz, dx, dy, dz, tMin, tMax) {
+  const i0 = indices[tri * 3] * 3, i1 = indices[tri * 3 + 1] * 3, i2 = indices[tri * 3 + 2] * 3;
+  const e1x = positions[i1] - positions[i0];
+  const e1y = positions[i1 + 1] - positions[i0 + 1];
+  const e1z = positions[i1 + 2] - positions[i0 + 2];
+  const e2x = positions[i2] - positions[i0];
+  const e2y = positions[i2 + 1] - positions[i0 + 1];
+  const e2z = positions[i2 + 2] - positions[i0 + 2];
+  const px = dy * e2z - dz * e2y;
+  const py = dz * e2x - dx * e2z;
+  const pz = dx * e2y - dy * e2x;
+  const det = e1x * px + e1y * py + e1z * pz;
+  if (Math.abs(det) < 1e-14) return Infinity; // ray parallel to the triangle
+  const invDet = 1 / det;
+  const tx = ox - positions[i0], ty = oy - positions[i0 + 1], tz = oz - positions[i0 + 2];
+  const u = (tx * px + ty * py + tz * pz) * invDet;
+  if (u < -1e-9 || u > 1 + 1e-9) return Infinity;
+  const qx = ty * e1z - tz * e1y;
+  const qy = tz * e1x - tx * e1z;
+  const qz = tx * e1y - ty * e1x;
+  const v = (dx * qx + dy * qy + dz * qz) * invDet;
+  if (v < -1e-9 || u + v > 1 + 1e-9) return Infinity;
+  const t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
+  return t > tMin && t < tMax ? t : Infinity;
+}
+
 export function buildFaceExtrusion(positions, indices, triStart = 0, triCount = indices.length / 3) {
   if (triCount <= 0) throw new Error('buildFaceExtrusion: empty triangle range');
   const tris = indices;

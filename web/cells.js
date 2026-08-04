@@ -294,6 +294,19 @@ let pendingPicks = [];    // picks waiting on a human
 const sketches = new Map(); // cell id -> its mounted sketch canvas
 
 const badge = (status) => `<span class="badge ${status}">${status.replace('_', ' ')}</span>`;
+
+/**
+ * What a cell's badge says.
+ *
+ * The document's own status is about the cell's prompt and code; the
+ * evaluation's is about what happened when it ran. When they disagree the run
+ * wins, or an assertion cell whose claim just missed would sit there reading
+ * 'ok'.
+ */
+function shownStatus(cell, entry) {
+  if (entry?.status === 'error' || entry?.status === 'failed') return entry.status;
+  return cell?.status ?? 'ok';
+}
 const fmt = (n) => (Math.abs(n) >= 1000 ? n.toFixed(0) : parseFloat(n.toPrecision(6)).toString());
 
 /**
@@ -323,9 +336,11 @@ function renderStack() {
   stack.innerHTML = '';
   doc.cells.forEach((cell, i) => {
     const entry = report.get(cell.id);
-    const status = entry?.status === 'error' ? 'error' : cell.status;
+    const status = shownStatus(cell, entry);
     const el = document.createElement('div');
-    el.className = `cell${status === 'error' ? ' failed' : ''}`;
+    const asserting = cell.kind === 'assert';
+    el.className = `cell${asserting ? ' assert' : ''}` +
+      `${status === 'error' ? ' failed' : ''}${status === 'failed' ? ' missed' : ''}`;
     el.dataset.id = cell.id;
 
     const refs = cell.refs?.length
@@ -334,7 +349,7 @@ function renderStack() {
 
     el.innerHTML = `
       <div class="cell-head">
-        <span class="cell-index">${i + 1}</span>
+        <span class="cell-index">${asserting ? '✓' : i + 1}</span>
         <span class="cell-id" title="Make this the output">${cell.id}</span>
         ${badge(status)}
         <span class="cell-refs">${refs}</span>
@@ -342,6 +357,7 @@ function renderStack() {
       </div>
       <textarea class="cell-prompt" rows="2" placeholder="no prompt">${escapeHtml(cell.prompt || '')}</textarea>
       ${cell.sketch ? '<div class="sketch-wrap"><canvas class="sketch-canvas"></canvas><div class="sketch-note"></div></div>' : ''}
+      <div class="checks"></div>
       <div class="params"></div>
       ${cell.code ? '<button class="cell-toggle">Show code</button><pre class="cell-code" hidden></pre>' : ''}
       <div class="cell-meta"></div>
@@ -496,12 +512,33 @@ function paintReport() {
   for (const el of document.querySelectorAll('.cell')) {
     const cell = doc.cells.find((c) => c.id === el.dataset.id);
     const entry = report.get(el.dataset.id);
-    const status = entry?.status === 'error' ? 'error' : cell?.status ?? 'ok';
+    const status = shownStatus(cell, entry);
 
     const b = el.querySelector('.badge');
     if (b) { b.className = `badge ${status}`; b.textContent = status.replace('_', ' '); }
     el.classList.toggle('failed', status === 'error');
+    el.classList.toggle('missed', status === 'failed');
     el.querySelector('.cell-ms').textContent = entry?.ms ? `${entry.ms}ms` : '';
+
+    // Every claim the cell made, with the number behind it. A passing check
+    // that showed nothing would be indistinguishable from a check nobody wrote,
+    // which is the whole reason the measurement is recorded rather than a tick.
+    const slot = el.querySelector('.checks');
+    if (slot) {
+      slot.innerHTML = '';
+      for (const c of entry?.checks || []) {
+        const row = document.createElement('div');
+        row.className = `check${c.ok ? '' : ' bad'}`;
+        const shown = Array.isArray(c.value) ? c.value.map(fmt).join(' × ') :
+          typeof c.value === 'number' ? fmt(c.value) : c.value ?? '';
+        const limit = Array.isArray(c.limit) ? c.limit.join(' × ') : c.limit;
+        row.innerHTML = `<span class="check-mark">${c.ok ? '✓' : '✕'}</span>
+          <span class="check-label">${escapeHtml(c.label)}</span>
+          <span class="check-value">${escapeHtml(String(shown))}${c.unit ? ` ${c.unit}` : ''}</span>
+          ${limit == null ? '' : `<span class="check-limit">vs ${escapeHtml(String(limit))}</span>`}`;
+        slot.append(row);
+      }
+    }
 
     el.querySelectorAll('.cell-error, .cell-log').forEach((n) => n.remove());
     if (entry?.error) {
@@ -622,6 +659,15 @@ async function refresh({ structural = true } = {}) {
       canvas.refresh(doc.cells.find((c) => c.id === id)?.sketch);
     }
   }
+
+  // A failed assertion is a property of the DOCUMENT, so it is said once at the
+  // top of the stack rather than only inside the cell that noticed.
+  const warn = $('#docWarn');
+  const failing = (evaluation?.assertions || []).filter((c) => !c.ok);
+  warn.hidden = !failing.length;
+  warn.textContent = failing.length
+    ? `${failing.length} assertion${failing.length === 1 ? '' : 's'} failing — exports refused`
+    : '';
 
   const m = evaluation?.measures;
   $('#measures').textContent = m

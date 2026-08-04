@@ -51,7 +51,7 @@ export function cellsRouter(doc, rootDir) {
    * say which cell that was. Everything else stays strict: introspecting or
    * exporting a different cell than the one asked for is worse than an error.
    */
-  async function withShape(req, body, { partial = false } = {}) {
+  async function withShape(req, body, { partial = false, requireAssertions = false } = {}) {
     const target = req.query.cell || req.body?.cell || doc.terminal;
     if (!target) throw new GraphError('The cell document is empty — add a cell first');
     await initBrep();
@@ -62,6 +62,19 @@ export function cellsRouter(doc, rootDir) {
       if (!shown) {
         const failed = run.report.find((c) => c.status !== 'ok');
         throw new GraphError(failed?.error || `Cell '${target}' produced no geometry`);
+      }
+      // A failed assertion stops an EXPORT and nothing else. The model still
+      // renders, still measures, still answers topology questions — because
+      // looking at the part is how you fix the wall that is too thin. What it
+      // does not do is leave the building. The escape hatch is deliberate and
+      // explicit: delete the assertion cell, which is an edit the document
+      // records, rather than a flag on a URL that it does not.
+      if (requireAssertions && !run.assertionsPass) {
+        const failed = run.assertions.filter((c) => !c.ok);
+        throw new GraphError(
+          `Refusing to export: ${failed.length} assertion${failed.length === 1 ? '' : 's'} failing — ` +
+          failed.map((c) => `${c.cell}: ${c.label} ${c.value}${c.unit ? ' ' + c.unit : ''} vs ${c.limit}`).join('; ')
+        );
       }
       return await body({
         ...run,
@@ -295,6 +308,8 @@ export function cellsRouter(doc, rootDir) {
           revision: doc.revision,
           order: evaluationOrder(doc, target).map((c) => c.id),
           cells: run.report,
+          assertions: run.assertions,
+          assertionsPass: run.assertionsPass,
           measures: shape ? measuresOf(shape) : null,
         });
       } finally {
@@ -398,7 +413,7 @@ export function cellsRouter(doc, rootDir) {
         res.setHeader('Content-Disposition', `attachment; filename="${target}.step"`);
         if (savedTo) res.setHeader('X-Saved-To', savedTo);
         res.send(step);
-      });
+      }, { requireAssertions: true });
     } catch (e) { fail(res, e); }
   });
 
@@ -412,7 +427,7 @@ export function cellsRouter(doc, rootDir) {
         res.setHeader('Content-Disposition', `attachment; filename="${target}.stl"`);
         if (savedTo) res.setHeader('X-Saved-To', savedTo);
         res.send(stl);
-      });
+      }, { requireAssertions: true });
     } catch (e) { fail(res, e); }
   });
 

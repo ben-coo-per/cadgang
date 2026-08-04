@@ -65,7 +65,22 @@ sk — 2D sketches under constraint, for profiles a primitive cannot express. sk
   dof > 0 means the sketch is under-constrained: it still built, but a later parameter change may move it
   somewhere you did not intend. Aim for dof 0. 'redundant' means you said something twice; harmless but noise.
 
-assert — ok(cond,msg); volumeUnder(shape,v); volumeOver(shape,v); fitsIn(shape,[x,y,z])
+assert — machine-checkable intent. Each one MEASURES, records the number in the transcript, and throws if it misses.
+  ok(cond, msg); volumeUnder(shape, mm³); volumeOver(shape, mm³); fitsIn(shape, [x,y,z])
+  minWall(shape, mm) — thinnest wall anywhere, by casting rays into the solid from all over its surface. SAMPLED:
+    biased low by tessellation (safe direction), and a thin spot smaller than the sample spacing can hide.
+  clearance(shape, queryA, queryB, mm) — exact closest approach between two sets of faces or edges.
+  watertight(shape) — the mesh that would be exported is closed. Judged on the tessellation, which is what ships.
+
+ASSERTION CELLS — add a cell with kind: 'assert' and its program states claims instead of building geometry.
+  export default ({ assert, input }) => { assert.minWall(input, 1.5); assert.watertight(input); };
+  It passes 'input' straight through, so it can sit anywhere in the stack without becoming a link in the chain.
+  A failed assertion fails the DOCUMENT, not the stack: the geometry still builds and still renders (looking at the
+  part is how you fix it), but STEP and STL exports REFUSE until it passes or the assertion cell is deleted.
+  Claims run as ordinary statements, so the first failure stops the ones after it in the SAME cell — put
+  independent claims in separate cells if you want to see all of them at once.
+  Write assertions for the things the prompt implied but the code cannot show: a wall that must survive a
+  parameter change, a clearance a part is built to, a volume budget. That is the loop closing.
 
 The program runs in an isolated realm: no filesystem, network, timers, or process, and a wall-clock budget. Standard JS (Math, Array, loops, functions) is available, so arrays of holes, patterns and derived dimensions are ordinary code.
 
@@ -75,9 +90,10 @@ THE AUTHORING LOOP — you cannot see the model, so introspection replaces looki
   3. cadgang_cells_query — confirm a query catches what you meant BEFORE applying it
   4. cadgang_cells_add / _compile the operation that uses it
   5. cadgang_cells_render — look at it
-  6. cadgang_cells_evaluate — confirm every cell is 'ok'`;
+  6. cadgang_cells_evaluate — confirm every cell is 'ok' AND 'assertionsPass' is true
+  7. add an assertion cell for what the prompt promised, so the next parameter change re-checks it`;
 
-const CELL_STATUS = `Cell status: 'ok' (code matches prompt) | 'stale' (prompt edited past the code) | 'diverged' (code hand-edited past the prompt) | 'awaiting_pick' (needs a user selection). Evaluation failure is reported by cadgang_cells_evaluate, not stored on the cell.`;
+const CELL_STATUS = `Cell status: 'ok' (code matches prompt) | 'stale' (prompt edited past the code) | 'diverged' (code hand-edited past the prompt) | 'awaiting_pick' (needs a user selection). Evaluation failure is reported by cadgang_cells_evaluate, not stored on the cell — as is 'failed', which is an assertion cell whose claim missed.`;
 
 /**
  * Register the cell tools.
@@ -134,6 +150,7 @@ Args:
   - params: overrides for the program's declared defaults
   - selections: picks this cell needs from the user, e.g. {"lip": "edge"}; the cell parks in 'awaiting_pick' until resolved
   - sketch: a stored 2D sketch for the user to drag, which the program reads with sk.saved(). Omit when the program builds its own sketch inline with sk.sketch() — that is the usual case.
+  - kind: 'model' (default, builds geometry) or 'assert' (states claims about the geometry and passes it through)
   - at: insert position (default: end of the stack)
 
 ${CELL_API}`,
@@ -145,6 +162,8 @@ ${CELL_API}`,
         params: z.record(paramValue).optional(),
         selections: z.record(z.enum(['face', 'edge'])).optional().describe('Picks the user must make'),
         sketch: sketchSchema.optional(),
+        kind: z.enum(['model', 'assert']).optional()
+          .describe("'assert' makes this a check that fails the document rather than a step that builds geometry"),
         at: z.number().int().optional().describe('Insert position'),
         compiledBy: z.string().optional().describe('Model that authored the code'),
       },
@@ -174,6 +193,7 @@ ${CELL_STATUS}`,
         refs: z.array(z.string()).optional().describe('Cells consumed; must point backwards'),
         selections: z.record(z.enum(['face', 'edge'])).optional(),
         sketch: sketchSchema.optional(),
+        kind: z.enum(['model', 'assert']).optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -286,6 +306,8 @@ Args:
     {
       title: 'Run the cell stack and report',
       description: `Evaluate the stack and report per-cell status, console output and timing, plus the final volume, area and bounding box. No geometry payload — this is the cheap "did my edit work" call.
+
+Also returns 'assertions' (every claim any cell made, with the number it measured) and 'assertionsPass'. A cell whose status is 'failed' is an assertion cell whose claim missed: the geometry still built, but exports refuse until it passes.
 
 Only the cells the target actually consumes are run, so an abandoned branch costs nothing.
 
