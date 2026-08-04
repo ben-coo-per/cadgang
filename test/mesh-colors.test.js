@@ -64,6 +64,28 @@ test('colors=1 on an input-less node attributes everything to the node itself', 
   }
 });
 
+// The web UI always asks for colors=1, so a sketch input that throws on being
+// asked for a distance took the whole mesh down — extrude and revolve rendered
+// nothing at all.
+test('colors=1 on a sketch-fed block meshes anyway, with no owners', async () => {
+  const doc = new ModelDocument(null);
+  doc.createNode({ type: 'sketch_rect', id: 'sk', params: { plane: 'XY', width: 30, height: 20 } });
+  doc.createNode({ type: 'brep_extrude', id: 'ex', params: { distance: 10 }, inputs: { profile: 'sk' } });
+  doc.setOutput('ex');
+
+  const { base, close } = await serve(doc);
+  try {
+    const res = await fetch(`${base}/api/mesh?colors=1&resolution=40`);
+    assert.strictEqual(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.positions.length > 0, 'the extrude meshed');
+    assert.strictEqual(body.owners, undefined);
+    assert.strictEqual(body.partIds, undefined);
+  } finally {
+    close();
+  }
+});
+
 test('mesh without colors omits partIds/owners; stats path never has them', async () => {
   const doc = new ModelDocument(null);
   doc.createNode({ type: 'sphere', id: 's', params: { radius: 10 } });

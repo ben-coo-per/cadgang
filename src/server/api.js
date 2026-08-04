@@ -288,9 +288,17 @@ export function apiRouter(doc, rootDir, broadcast = () => {}) {
           out.faces = mesh.faces;
           out.edges = tessellateEdges(c.brep, { tolerance: brepTolerance(req) });
         }
-        if (req.query.colors === '1') {
-          const partIds = directParts(nodeId);
-          const partFns = partIds.map((id) => compileNode(doc, id).fn);
+        // Sketch inputs are dropped: a sketch has no volume, so asking it for a
+        // distance throws. An extrude or revolve therefore has no colourable
+        // parts at all and simply ships no owners.
+        const parts = req.query.colors === '1'
+          ? directParts(nodeId)
+              .map((id) => ({ id, res: compileNode(doc, id) }))
+              .filter((p) => !isSketch(p.res.brep))
+          : [];
+        if (parts.length) {
+          const partIds = parts.map((p) => p.id);
+          const partFns = parts.map((p) => p.res.fn);
           const pos = mesh.positions;
           const owners = new Array(pos.length / 3);
           for (let v = 0; v < owners.length; v++) {
