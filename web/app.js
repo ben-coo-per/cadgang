@@ -578,6 +578,11 @@ const sm = createSpaceMouse({
   },
 });
 
+// TODO(spacemouse): button actions on the driver route. navlib lets an app register a
+// command tree (3dx_rpc:update { commands: { activeSet, tree } }); the driver then shows
+// those commands in 3Dconnexion Settings for mapping onto the puck's buttons and writes
+// `commands.activeCommand = <id>` when one is pressed. Wire home/fit/front/etc. through
+// that so the buttons are configurable per user, and add a "Buttons" block to this pane.
 // ---- 3DxWare driver route (web/navlib.js). The driver reads our scene and writes the
 // camera back; cadgang is Z-up and column-major, which is what these properties assume.
 
@@ -767,8 +772,9 @@ function syncSmForm() {
   $('#smConnect').disabled = smSettings.transport === 'webhid' ? !sm.supported.hid : false;
   // while the driver steers, speed/axis/invert live in 3Dconnexion's own settings
   $('#smRaw').classList.toggle('sm-off', viaDriver);
+  $('#smCover').classList.toggle('hidden', !viaDriver);
   $('#smSupport').textContent = viaDriver
-    ? 'The 3Dconnexion driver is computing the motion, so speed, axis directions and button actions come from its own settings (the 3Dconnexion menu-bar icon). Its Fit and view buttons work as usual.'
+    ? 'Button actions are the driver\'s too: Fit and the view buttons work as usual. cadgang-specific button actions are not offered yet.'
     : !sm.supported.hid && !driverInfo
     ? 'No WebHID in this browser and no 3Dconnexion driver answering. Install 3DxWare, or use Chrome, Edge or another Chromium browser over localhost or https.'
     : /open/i.test(smLastError || '')
