@@ -559,6 +559,8 @@ const mouseModal = $('#mouseModal');
 const smStatus = $('#smStatus');
 
 const sm = createSpaceMouse({
+  // `?nohid` simulates a browser without WebHID (Safari/Firefox) for testing the fallback path
+  disableHid: new URLSearchParams(location.search).has('nohid'),
   onStatus: ({ connected, transport, name, error }) => {
     mouseBtn.classList.toggle('sm-on', connected);
     mouseBtn.title = connected ? `3D mouse connected: ${name}` : '3Dconnexion SpaceMouse — connect and tune a 3D mouse';
@@ -639,7 +641,7 @@ function syncSmForm() {
   $('#smConnect').disabled = !sm.supported.hid;
   $('#smSupport').textContent = sm.supported.hid
     ? 'Left button = home view · right button = fit to model.'
-    : 'This browser has no WebHID (use Chrome, Edge or Opera over localhost or https). Falling back to the Gamepad API, which only sees the puck when no 3Dconnexion driver is running.';
+    : 'No WebHID in this browser, so a SpaceMouse can\'t be paired here. Use Chrome, Edge or another Chromium browser over localhost or https.';
 }
 for (const [key, sel] of SM_SLIDERS) {
   $(sel).addEventListener('input', (e) => {
@@ -665,6 +667,13 @@ mouseBtn.onclick = () => {
   $('#modalBackdrop').classList.remove('hidden');
   mouseModal.classList.remove('hidden');
   syncSmForm();
+  // Opening the panel is the only "trying to use a 3D mouse" signal a browser without
+  // WebHID can give us: Safari and Firefox never enumerate the puck (their Gamepad API
+  // matches joysticks and gamepads, not multi-axis controllers), so there is nothing to
+  // detect at the device level. Warn once per session, dismissably.
+  if (!sm.supported.hid) {
+    showToast('No 3D mouse support in this browser: Safari and Firefox can\'t see 3Dconnexion devices. Open cadgang in Chrome, Edge or another Chromium browser to use a SpaceMouse.', { once: 'spacemouse-nohid' });
+  }
 };
 $('#smClose').onclick = () => closeModals();
 
@@ -871,6 +880,24 @@ function showOk(msg) {
   status.textContent = msg;
   status.className = 'status ok';
 }
+
+// Dismissable toast for notices that must outlive the one-line header status. One at a
+// time; `once` names a sessionStorage key so a dismissed notice stays gone for the session.
+const toast = $('#toast');
+function showToast(msg, { once } = {}) {
+  const key = once && `cadgang:toast:${once}`;
+  try { if (key && sessionStorage.getItem(key)) return false; } catch { /* storage blocked */ }
+  $('#toastText').textContent = msg;
+  toast.dataset.once = key || '';
+  toast.classList.remove('hidden');
+  return true;
+}
+function dismissToast() {
+  toast.classList.add('hidden');
+  const key = toast.dataset.once;
+  if (key) { try { sessionStorage.setItem(key, '1'); } catch { /* storage blocked */ } }
+}
+$('#toastClose').onclick = dismissToast;
 
 // ------------------------------------------------------------ graph state
 

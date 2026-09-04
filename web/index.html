@@ -129,6 +129,12 @@
     </div>
   </div>
 
+  <!-- dismissable toast (one at a time) -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite">
+    <span id="toastText"></span>
+    <button id="toastClose" class="toast-close" title="Dismiss" aria-label="Dismiss">×</button>
+  </div>
+
   <script type="module" src="app.js"></script>
 </body>
 </html>

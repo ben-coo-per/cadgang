@@ -62,7 +62,9 @@ Roll (tilting the cap sideways) is ignored — the camera is a Z-up turntable an
 
 **Setup.** Click **3D MOUSE** in the header, then **Connect** and pick the device in the browser's prompt. The browser remembers the grant, so from then on the puck is live as soon as the page loads. The panel shows the six axes moving in real time, plus speed sliders, a dead-zone slider and per-axis invert toggles (device firmware and hands disagree about which way is "forward"; flip an axis rather than fight it). Settings persist in the browser.
 
-**Browser support.** The puck is read directly over [WebHID](https://developer.mozilla.org/en-US/docs/Web/API/WebHID_API) — no vendor driver is needed, and it works the same on macOS, Windows and Linux. WebHID exists in Chrome, Edge, Opera and other Chromium browsers, and only on a secure origin (`localhost` or `https`). Firefox and Safari have no WebHID; there the app falls back to the Gamepad API, which only sees the puck when no 3Dconnexion driver is installed, and is best-effort.
+**Browser support.** The puck is read directly over [WebHID](https://developer.mozilla.org/en-US/docs/Web/API/WebHID_API) — no vendor driver is needed, and it works the same on macOS, Windows and Linux. WebHID exists in Chrome, Edge, Opera and other Chromium browsers, and only on a secure origin (`localhost` or `https`).
+
+**Safari and Firefox cannot use a SpaceMouse.** They have no WebHID, and their Gamepad API only enumerates HID joysticks and gamepads — a 3Dconnexion puck is a *multi-axis controller*, so those browsers never see it at all (Chromium's Gamepad API does, which is why cadgang keeps a Gamepad fallback for Chromium builds with WebHID switched off). Opening the 3D MOUSE panel in such a browser shows a dismissable notice saying so; there is no way to detect the device itself there.
 
 Platform notes:
 

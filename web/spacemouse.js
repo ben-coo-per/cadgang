@@ -119,8 +119,8 @@ export const STALE_MS = 150;
  * user granted earlier), `request()` from a click handler to pair a new device, and
  * `poll(now)` once per animation frame to get the current shaped axes (or null when idle).
  */
-export function createSpaceMouse({ onStatus, onButton, onAxes } = {}) {
-  const hid = typeof navigator !== 'undefined' ? navigator.hid : undefined;
+export function createSpaceMouse({ onStatus, onButton, onAxes, disableHid = false } = {}) {
+  const hid = typeof navigator !== 'undefined' && !disableHid ? navigator.hid : undefined;
   const hasGamepad = typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function';
 
   const state = {
