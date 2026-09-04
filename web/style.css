@@ -503,3 +503,41 @@ footer {
 .ac-pop .ac-row.active { background: var(--paper-2); }
 .ac-pop .ac-name { font-weight: 700; color: var(--ink); }
 .ac-pop .ac-val { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------ 3D mouse (SpaceMouse) */
+
+#mouseBtn { white-space: nowrap; }
+#mouseBtn.sm-on { border-color: var(--signal-orange); color: var(--signal-orange); }
+#mouseModal { width: 440px; max-width: 92vw; }
+.sm-status {
+  color: var(--ink-faint); font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--ls-label);
+  text-align: right; max-width: 68%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sm-status.ok { color: var(--signal-green); }
+.sm-status.err { color: var(--signal-red); }
+.sm-row { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-4); }
+.sm-row button { padding: 8px 14px; font-size: var(--fs-12); }
+.sm-row button:disabled { opacity: 0.35; cursor: not-allowed; }
+.sm-axes { display: flex; flex-direction: column; gap: 5px; margin-bottom: var(--sp-4); }
+.sm-axis { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-12); }
+.sm-axis-name { width: 92px; white-space: nowrap; color: var(--ink-faint); text-transform: uppercase; letter-spacing: var(--ls-label); }
+.sm-bar {
+  flex: 1; position: relative; height: 8px; background: var(--paper-2);
+  border: var(--bw-hair) solid var(--rule); overflow: hidden;
+}
+.sm-bar::before { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--rule); }
+.sm-fill { position: absolute; top: 0; bottom: 0; left: 50%; width: 0; background: var(--signal-orange); }
+.sm-axis.dim { opacity: 0.45; }
+.sm-val { width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+.sm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2) var(--sp-4); margin-bottom: var(--sp-3); }
+.sm-grid label { min-width: 0;
+  display: flex; align-items: center; gap: var(--sp-2);
+  color: var(--ink-faint); font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--ls-label);
+}
+.sm-grid input[type="range"] { flex: 1; min-width: 0; }
+.sm-num { width: 40px; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+.sm-inverts { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); font-size: var(--fs-12); }
+.sm-inverts-label { color: var(--ink-faint); text-transform: uppercase; letter-spacing: var(--ls-label); }
+.sm-inverts label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.sm-inverts input { accent-color: var(--ink); margin: 0; }
+.sm-help { margin: 0 0 var(--sp-4); color: var(--ink-faint); font-size: var(--fs-12); line-height: 1.5; }

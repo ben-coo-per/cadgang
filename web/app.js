@@ -1,6 +1,7 @@
 /* cadgang web UI: Three.js viewport + node-graph editor over the REST API. */
 
 import * as THREE from 'three';
+import { createSpaceMouse, AXES as SM_AXES, STALE_MS as SM_STALE_MS } from './spacemouse.js';
 
 const $ = (sel) => document.querySelector(sel);
 // everything is addressed relative to the directory index.html was served from, so the
@@ -137,6 +138,26 @@ function applyCamera() {
   );
   camera.up.set(0, 0, 1);
   camera.lookAt(orbit.target);
+}
+
+// Home = the startup view; fit = frame whatever is in the scene (model and/or edge overlay).
+const HOME_VIEW = { yaw: orbit.yaw, pitch: orbit.pitch, dist: orbit.dist };
+function homeView() {
+  orbit.yaw = HOME_VIEW.yaw; orbit.pitch = HOME_VIEW.pitch; orbit.dist = HOME_VIEW.dist;
+  orbit.target.set(0, 0, 0);
+  applyCamera();
+}
+function fitView() {
+  const box = new THREE.Box3();
+  if (meshObj) box.expandByObject(meshObj);
+  if (edgeObj) box.expandByObject(edgeObj);
+  if (box.isEmpty()) { homeView(); return; }
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  const vfov = THREE.MathUtils.degToRad(camera.fov) / 2;
+  const fov = Math.min(vfov, Math.atan(Math.tan(vfov) * camera.aspect)); // tighter of the two half-angles
+  orbit.target.copy(sphere.center);
+  orbit.dist = clamp((sphere.radius / Math.sin(fov)) * 1.1, 2, 2000);
+  applyCamera();
 }
 
 // The document/SDF space is Z-up and maps DIRECTLY onto the Three.js world (no group
@@ -511,10 +532,151 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 
-(function animate() {
+// ------------------------------------------------------------ 3D mouse (3Dconnexion SpaceMouse)
+//
+// "Object mode": the model is in your hand. Push the cap right/up and the model moves
+// right/up; push it away to zoom in; tilt to tumble, twist to spin. Roll (ry) has no
+// meaning in a Z-up turntable camera and is ignored. Left button = home, right = fit.
+
+const SM_DEFAULTS = {
+  pan: 1, zoom: 1, orbit: 1, deadzone: 0.05,
+  invert: { x: false, y: false, z: false, rx: false, ry: false, rz: false },
+};
+function loadSmSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('cadgang:spacemouse') || 'null');
+    if (saved && typeof saved === 'object') {
+      return { ...SM_DEFAULTS, ...saved, invert: { ...SM_DEFAULTS.invert, ...(saved.invert || {}) } };
+    }
+  } catch { /* corrupt entry → defaults */ }
+  return { ...SM_DEFAULTS, invert: { ...SM_DEFAULTS.invert } };
+}
+let smSettings = loadSmSettings();
+const saveSmSettings = () => localStorage.setItem('cadgang:spacemouse', JSON.stringify(smSettings));
+
+const mouseBtn = $('#mouseBtn');
+const mouseModal = $('#mouseModal');
+const smStatus = $('#smStatus');
+
+const sm = createSpaceMouse({
+  onStatus: ({ connected, transport, name, error }) => {
+    mouseBtn.classList.toggle('sm-on', connected);
+    mouseBtn.title = connected ? `3D mouse connected: ${name}` : '3Dconnexion SpaceMouse — connect and tune a 3D mouse';
+    smStatus.textContent = error ? `error · ${error}`
+      : connected ? `${name} · ${transport === 'hid' ? 'WebHID' : 'Gamepad API'}` : 'not connected';
+    smStatus.className = 'sm-status' + (error ? ' err' : connected ? ' ok' : '');
+    if (error) showErr(new Error(error));
+    else if (connected) showOk(`3D MOUSE · ${name.toUpperCase()}`);
+    if (!mouseModal.classList.contains('hidden')) syncSmForm();
+  },
+  onButton: (i, pressed) => {
+    if (!pressed) return;
+    if (i === 0) homeView();
+    else if (i === 1) fitView();
+  },
+});
+sm.autoConnect();
+
+const SM_ROT = 2.2;   // rad/s at full deflection (× the ORBIT slider)
+const SM_PAN = 0.8;   // view-widths per second at full deflection (× PAN)
+const SM_ZOOM = 1.2;  // e-folds of camera distance per second (× ZOOM)
+const _smRight = new THREE.Vector3(), _smUp = new THREE.Vector3();
+function driveSpaceMouse(dt, now) {
+  const a = sm.poll(now, { deadzone: smSettings.deadzone });
+  if (!a) return;
+  const inv = smSettings.invert;
+  const g = (k) => (inv[k] ? -a[k] : a[k]);
+  _smRight.setFromMatrixColumn(camera.matrix, 0);
+  _smUp.setFromMatrixColumn(camera.matrix, 1);
+  // moving the model right on screen == moving the camera target left (same as right-drag pan)
+  const pan = orbit.dist * SM_PAN * smSettings.pan * dt;
+  orbit.target.addScaledVector(_smRight, -g('x') * pan);
+  orbit.target.addScaledVector(_smUp, -g('z') * pan);
+  orbit.dist = clamp(orbit.dist * Math.exp(-g('y') * SM_ZOOM * smSettings.zoom * dt), 2, 2000);
+  const rot = SM_ROT * smSettings.orbit * dt;
+  orbit.yaw -= g('rz') * rot;   // twist counter-clockwise → model spins counter-clockwise (as a right-drag does)
+  orbit.pitch = clamp(orbit.pitch + g('rx') * rot, -1.45, 1.45);
+  applyCamera();
+}
+
+// ---- settings modal: connect, live axis readout, speeds, per-axis invert
+
+const smAxisFills = {};
+const smAxisVals = {};
+{
+  const host = $('#smAxes');
+  const LABEL = { x: 'X pan', y: 'Y zoom', z: 'Z pan', rx: 'RX tilt', ry: 'RY roll', rz: 'RZ twist' };
+  for (const k of SM_AXES) {
+    const row = document.createElement('div');
+    row.className = 'sm-axis' + (k === 'ry' ? ' dim' : '');
+    if (k === 'ry') row.title = 'Roll has no meaning in a Z-up turntable camera and is ignored';
+    row.innerHTML = `<span class="sm-axis-name">${LABEL[k]}</span><span class="sm-bar"><span class="sm-fill"></span></span><span class="sm-val">0.00</span>`;
+    smAxisFills[k] = row.querySelector('.sm-fill');
+    smAxisVals[k] = row.querySelector('.sm-val');
+    host.appendChild(row);
+  }
+}
+function renderSmAxes(now) {
+  const live = sm.state.transport && now - sm.state.at <= SM_STALE_MS;
+  for (const k of SM_AXES) {
+    const v = live ? (smSettings.invert[k] ? -sm.state[k] : sm.state[k]) : 0;
+    const fill = smAxisFills[k];
+    fill.style.left = `${50 + Math.min(0, v) * 50}%`;
+    fill.style.width = `${Math.abs(v) * 50}%`;
+    smAxisVals[k].textContent = (v >= 0 ? '+' : '') + v.toFixed(2);
+  }
+}
+
+const SM_SLIDERS = [['pan', '#smPan'], ['zoom', '#smZoom'], ['orbit', '#smOrbit'], ['deadzone', '#smDead']];
+function syncSmForm() {
+  for (const [key, sel] of SM_SLIDERS) {
+    const input = $(sel);
+    input.value = smSettings[key];
+    input.nextElementSibling.textContent = key === 'deadzone' ? `${Math.round(smSettings.deadzone * 100)}%` : `${smSettings[key].toFixed(1)}×`;
+  }
+  for (const box of mouseModal.querySelectorAll('input[data-axis]')) box.checked = !!smSettings.invert[box.dataset.axis];
+  $('#smDisconnect').disabled = !sm.state.transport;
+  $('#smConnect').disabled = !sm.supported.hid;
+  $('#smSupport').textContent = sm.supported.hid
+    ? 'Left button = home view · right button = fit to model.'
+    : 'This browser has no WebHID (use Chrome, Edge or Opera over localhost or https). Falling back to the Gamepad API, which only sees the puck when no 3Dconnexion driver is running.';
+}
+for (const [key, sel] of SM_SLIDERS) {
+  $(sel).addEventListener('input', (e) => {
+    smSettings[key] = parseFloat(e.target.value);
+    saveSmSettings();
+    syncSmForm();
+  });
+}
+for (const box of mouseModal.querySelectorAll('input[data-axis]')) {
+  box.addEventListener('change', () => { smSettings.invert[box.dataset.axis] = box.checked; saveSmSettings(); });
+}
+$('#smReset').onclick = () => { smSettings = { ...SM_DEFAULTS, invert: { ...SM_DEFAULTS.invert } }; saveSmSettings(); syncSmForm(); };
+$('#smConnect').onclick = async () => {
+  try {
+    const ok = await sm.request();
+    if (!ok) showOk('NO 3D MOUSE SELECTED');
+  } catch (e) { showErr(e); }
+  syncSmForm();
+};
+$('#smDisconnect').onclick = async () => { await sm.disconnect(); syncSmForm(); };
+mouseBtn.onclick = () => {
+  closeModals();
+  $('#modalBackdrop').classList.remove('hidden');
+  mouseModal.classList.remove('hidden');
+  syncSmForm();
+};
+$('#smClose').onclick = () => closeModals();
+
+let lastFrame = performance.now();
+(function animate(now) {
   requestAnimationFrame(animate);
+  const dt = clamp((now - lastFrame) / 1000, 0, 0.05); // cap so a background tab can't lurch on return
+  lastFrame = now;
+  driveSpaceMouse(dt, now);
+  if (!mouseModal.classList.contains('hidden')) renderSmAxes(now);
   renderer.render(scene, camera);
-})();
+})(lastFrame);
 
 // ------------------------------------------------------------ meshing
 
@@ -1626,6 +1788,7 @@ function closeModals() {
   saveModal.classList.add('hidden');
   openModal.classList.add('hidden');
   formulaModal.classList.add('hidden');
+  mouseModal.classList.add('hidden');
 }
 backdrop.addEventListener('pointerdown', (e) => { if (e.target === backdrop) closeModals(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModals(); });

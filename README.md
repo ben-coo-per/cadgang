@@ -43,6 +43,40 @@ Open http://localhost:4477 — the viewport live-updates (WebSocket) whenever th
 - **STACK / SIDE** toggles the graph/viewport split between stacked and side-by-side; **DARK** toggles the theme; **COLOR** switches per-part color vs. stainless render
 - **Save / Open** stores named models server-side (`saves/`)
 - Click the footer formula to see the whole model as a nested functional expression
+- **3D MOUSE** connects a 3Dconnexion SpaceMouse to the viewport — see [3D mouse](#3d-mouse-spacemouse)
+
+### 3D mouse (SpaceMouse)
+
+Any 3Dconnexion puck (SpaceNavigator, SpaceMouse Compact / Wireless / Pro / Enterprise, wired or via the universal receiver) drives the viewport in **object mode**: the model is in your hand.
+
+| Cap | Viewport |
+|---|---|
+| push left / right, lift / press | pan |
+| push away / pull back | zoom in / out |
+| tilt forward / back | tumble (pitch) |
+| twist | spin (yaw) |
+| left button | home view |
+| right button | fit model |
+
+Roll (tilting the cap sideways) is ignored — the camera is a Z-up turntable and has no roll.
+
+**Setup.** Click **3D MOUSE** in the header, then **Connect** and pick the device in the browser's prompt. The browser remembers the grant, so from then on the puck is live as soon as the page loads. The panel shows the six axes moving in real time, plus speed sliders, a dead-zone slider and per-axis invert toggles (device firmware and hands disagree about which way is "forward"; flip an axis rather than fight it). Settings persist in the browser.
+
+**Browser support.** The puck is read directly over [WebHID](https://developer.mozilla.org/en-US/docs/Web/API/WebHID_API) — no vendor driver is needed, and it works the same on macOS, Windows and Linux. WebHID exists in Chrome, Edge, Opera and other Chromium browsers, and only on a secure origin (`localhost` or `https`). Firefox and Safari have no WebHID; there the app falls back to the Gamepad API, which only sees the puck when no 3Dconnexion driver is installed, and is best-effort.
+
+Platform notes:
+
+- **macOS** — if 3DxWare is running it holds the device exclusively and the browser sees nothing move. Quit the 3Dconnexion helper from its menu-bar icon (or uninstall the driver; this app doesn't need it).
+- **Windows** — works out of the box, with or without 3DxWare.
+- **Linux** — the browser needs read access to the `hidraw` node. Add a udev rule and re-plug the device:
+  ```
+  # /etc/udev/rules.d/70-spacemouse.rules
+  KERNEL=="hidraw*", ATTRS{idVendor}=="256f", MODE="0666", TAG+="uaccess"
+  KERNEL=="hidraw*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c62*", MODE="0666", TAG+="uaccess"
+  ```
+  Stop `spacenavd` if it is running; it also opens the device.
+
+The driver lives in [`web/spacemouse.js`](web/spacemouse.js) and knows nothing about Three.js: it parses the 3Dconnexion HID reports (translation, rotation, buttons) into a normalized six-axis state that `app.js` integrates into the orbit camera every frame.
 
 ## Claude Code integration (MCP)
 

@@ -31,8 +31,9 @@
       <button id="splitToggle" class="ghost" title="Switch between horizontal and vertical split">STACK</button>
       <button id="themeToggle" class="ghost" title="Toggle light / dark">DARK</button>
       <button id="colorToggle" class="ghost" title="Toggle per-part color / stainless">COLOR</button>
+      <button id="mouseBtn" class="ghost" title="3Dconnexion SpaceMouse — connect and tune a 3D mouse">3D MOUSE</button>
       <span id="status" class="status"></span>
-      <span class="version"><span class="idcode">CWT_SW_CADGANG_0602</span> <span class="idver">v0.6.2</span></span>
+      <span class="version"><span class="idcode">CWT_SW_CADGANG_0700</span> <span class="idver">v0.7.0</span></span>
     </div>
   </header>
 
@@ -94,6 +95,36 @@
       <pre id="formulaPre"></pre>
       <div class="modal-actions">
         <button id="formulaClose">Close</button>
+      </div>
+    </div>
+    <div id="mouseModal" class="modal hidden">
+      <div class="modal-head">
+        <h3>3D mouse</h3>
+        <span id="smStatus" class="sm-status">not connected</span>
+      </div>
+      <div class="sm-row">
+        <button id="smConnect" class="primary" title="Pair a 3Dconnexion device (WebHID)">Connect</button>
+        <button id="smDisconnect" class="ghost" title="Release the device">Disconnect</button>
+        <button id="smReset" class="ghost" title="Restore default speeds and axis directions">Defaults</button>
+      </div>
+      <div id="smAxes" class="sm-axes"></div>
+      <div class="sm-grid">
+        <label>pan <input id="smPan" type="range" min="0.2" max="3" step="0.1" /><span class="sm-num">1.0×</span></label>
+        <label>zoom <input id="smZoom" type="range" min="0.2" max="3" step="0.1" /><span class="sm-num">1.0×</span></label>
+        <label>orbit <input id="smOrbit" type="range" min="0.2" max="3" step="0.1" /><span class="sm-num">1.0×</span></label>
+        <label>dead zone <input id="smDead" type="range" min="0" max="0.3" step="0.01" /><span class="sm-num">5%</span></label>
+      </div>
+      <div class="sm-inverts">
+        <span class="sm-inverts-label">invert</span>
+        <label><input type="checkbox" data-axis="x" /> x</label>
+        <label><input type="checkbox" data-axis="y" /> y</label>
+        <label><input type="checkbox" data-axis="z" /> z</label>
+        <label><input type="checkbox" data-axis="rx" /> rx</label>
+        <label><input type="checkbox" data-axis="rz" /> rz</label>
+      </div>
+      <p id="smSupport" class="sm-help"></p>
+      <div class="modal-actions">
+        <button id="smClose">Close</button>
       </div>
     </div>
   </div>
