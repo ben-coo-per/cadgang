@@ -24,18 +24,36 @@ export const NLPROXY_URL = `https://${PROXY_HOST}:8181/3dconnexion/nlproxy`;
 
 const WELCOME = 0, PREFIX = 1, CALL = 2, CALL_RESULT = 3, CALL_ERROR = 4, SUBSCRIBE = 5, EVENT = 8;
 
-/** Is a 3Dconnexion driver running here? Resolves to its version string, or null. */
-export async function probeDriver(timeoutMs = 1500) {
+const LAST_PORT_KEY = 'cadgang:navlib:lastPort';
+
+/**
+ * Is a 3Dconnexion driver running here? Resolves to { port, version } or null.
+ * The discovery endpoint on 8181 drops out for a while after a session ends even though
+ * the data port stays up, so on failure we retry briefly and then fall back to the port
+ * that worked last time (it only changes when the driver restarts).
+ */
+export async function probeDriver({ timeoutMs = 1500, attempts = 3, delayMs = 700 } = {}) {
   if (typeof fetch !== 'function') return null;
-  try {
-    const res = await fetch(NLPROXY_URL, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(timeoutMs), cache: 'no-store' });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return typeof data.port === 'number' ? { port: data.port, version: String(data.version || '') } : null;
-  } catch {
-    return null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(NLPROXY_URL, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(timeoutMs), cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (typeof data.port === 'number') {
+          try { localStorage.setItem(LAST_PORT_KEY, String(data.port)); } catch { /* storage blocked */ }
+          return { port: data.port, version: String(data.version || '') };
+        }
+      }
+    } catch { /* not answering (yet) */ }
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
   }
+  // Discovery is down: try the port that worked last time, then the driver's usual one.
+  // A guessed port is only trusted once the WebSocket handshake actually succeeds.
+  let last = null;
+  try { last = Number(localStorage.getItem(LAST_PORT_KEY)) || null; } catch { /* storage blocked */ }
+  return { port: last || DEFAULT_PORT, version: '', guessed: true };
 }
+const DEFAULT_PORT = 8182;
 
 /**
  * Create a driver session.
@@ -44,7 +62,29 @@ export async function probeDriver(timeoutMs = 1500) {
  *   onStatus – ({ connected, name, error }) on every state change
  *   onMotion – (moving: boolean) when the driver starts/stops driving the camera
  */
-export function createNavlib({ props, onStatus, onMotion, appName = 'cadgang', appVersion = '0.8' } = {}) {
+/** Node types of the driver's action tree (SiActionNodeType_t in the vendor SDK). */
+export const NODE = { SET: 0, CATEGORY: 1, ACTION: 2 };
+
+/**
+ * Build the `commands` payload the driver wants: one action set holding categories of
+ * actions. `sets` = [{ id, label, categories: [{ id, label, actions: [{ id, label, description }] }] }].
+ * The driver lists these under the app's profile in 3Dconnexion Settings so the puck's
+ * buttons can be mapped to them, and writes `commands.activeCommand = id` on a press.
+ */
+export function buildCommands(activeSet, sets) {
+  const node = (type, n, nodes) => ({ type, id: n.id, label: n.label || n.id, description: n.description || '', ...(nodes ? { nodes } : {}) });
+  return {
+    activeSet,
+    tree: {
+      nodes: sets.map((set) => node(NODE.SET, set,
+        (set.categories || []).map((cat) => node(NODE.CATEGORY, cat,
+          (cat.actions || []).map((a) => node(NODE.ACTION, a)))))),
+    },
+  };
+}
+
+export function createNavlib({ props, onStatus, onMotion, appName = 'cadgang', appVersion = '0.8', commands = null, debug = false } = {}) {
+  const log = debug ? (...a) => console.log('[navlib]', ...a) : () => {};
   let ws = null;
   let seq = 0;
   const pending = new Map();
@@ -53,11 +93,15 @@ export function createNavlib({ props, onStatus, onMotion, appName = 'cadgang', a
   let moving = false;
   let pumpId = 0;
   let version = '';
+  let wanted = false;          // true between connect() and disconnect(): reconnect on drops
+  let retryTimer = 0;
+  let retryDelay = 1000;
 
   const state = { get connected() { return instance !== null; }, get moving() { return moving; }, get version() { return version; } };
   const emit = (extra = {}) => onStatus?.({ connected: instance !== null, name: `3DxWare driver${version ? ` ${version}` : ''}`, ...extra });
 
   const send = (msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
+  const isPump = (m) => m[0] === CALL && m[3]?.frame?.time !== undefined;
   const call = (proc, ...args) => new Promise((resolve, reject) => {
     const id = `c${++seq}`;
     pending.set(id, { resolve, reject });
@@ -84,8 +128,10 @@ export function createNavlib({ props, onStatus, onMotion, appName = 'cadgang', a
     if (method === 'self:read') {
       let v;
       try { v = props.read(prop); } catch { v = undefined; }
+      log('read', prop, '→', v === undefined ? null : v);
       send([CALL_RESULT, id, v === undefined ? null : v]);
     } else if (method === 'self:update') {
+      log('write', prop, value);
       if (prop === 'motion') setMoving(!!value);
       try { props.write(prop, value); } catch { /* never let an app error stall the driver */ }
       send([CALL_RESULT, id, {}]);
@@ -109,8 +155,11 @@ export function createNavlib({ props, onStatus, onMotion, appName = 'cadgang', a
           instance = ctl.instance;
           controllerUri = `3dconnexion:3dcontroller/${instance}`;
           send([SUBSCRIBE, controllerUri]);
+          try { localStorage.setItem(LAST_PORT_KEY, String(new URL(ws.url).port)); } catch { /* storage blocked */ }
           await call('3dx_rpc:update', controllerUri, { focus: true });
           await call('3dx_rpc:update', controllerUri, { frame: { timingSource: 1 } });
+          // the driver keeps commands per session, so they go up on every connect
+          if (commands) await call('3dx_rpc:update', controllerUri, { commands }).catch((e) => log('commands rejected', e));
           emit();
         } catch (e) {
           emit({ error: `driver refused the session (${Array.isArray(e) ? e.join(' ') : e})` });
@@ -119,15 +168,21 @@ export function createNavlib({ props, onStatus, onMotion, appName = 'cadgang', a
         break;
       }
       case CALL_RESULT: { const p = pending.get(msg[1]); pending.delete(msg[1]); p?.resolve(msg[2]); break; }
-      case CALL_ERROR: { const p = pending.get(msg[1]); pending.delete(msg[1]); p?.reject(msg.slice(2)); break; }
-      case EVENT: { const inner = msg[2]; if (Array.isArray(inner) && inner[0] === CALL) onServerCall(inner); break; }
-      default: break;
+      case CALL_ERROR: { const p = pending.get(msg[1]); pending.delete(msg[1]); log('call error', msg.slice(1)); p?.reject(msg.slice(2)); break; }
+      case EVENT: {
+        const inner = msg[2];
+        if (Array.isArray(inner) && inner[0] === CALL) onServerCall(inner);
+        else log('event', msg[1], inner);
+        break;
+      }
+      default: log('unhandled', msg); break;
     }
   }
 
   /** Connect to the driver. Resolves true once the controller is live. */
   async function connect(known) {
     if (ws) return instance !== null;
+    wanted = true;
     const info = known || await probeDriver();
     if (!info) { emit({ error: 'no 3Dconnexion driver answering on this machine' }); return false; }
     version = info.version;
@@ -140,7 +195,7 @@ export function createNavlib({ props, onStatus, onMotion, appName = 'cadgang', a
         emit({ error: e.message }); ws = null; return finish(false);
       }
       ws.onmessage = (ev) => { onMessage(ev.data).then(() => { if (instance !== null) finish(true); }); };
-      ws.onerror = () => { emit({ error: 'could not reach the 3Dconnexion driver (is its certificate trusted?)' }); };
+      ws.onerror = () => { if (!info.guessed) emit({ error: 'could not reach the 3Dconnexion driver (is its certificate trusted?)' }); };
       ws.onclose = () => {
         const was = instance !== null;
         ws = null; instance = null; controllerUri = null;
@@ -149,11 +204,17 @@ export function createNavlib({ props, onStatus, onMotion, appName = 'cadgang', a
         setMoving(false);
         if (was) emit();
         finish(false);
+        if (wanted) {   // the driver restarted or dropped us: come back quietly
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => { if (wanted && !ws) connect().then((ok) => { retryDelay = ok ? 1000 : Math.min(retryDelay * 2, 15000); }); }, retryDelay);
+        }
       };
     });
   }
 
   function disconnect() {
+    wanted = false;
+    clearTimeout(retryTimer); retryTimer = 0; retryDelay = 1000;
     setMoving(false);
     if (ws) { try { ws.close(); } catch { /* already gone */ } }
     ws = null; instance = null; controllerUri = null;

@@ -2,7 +2,7 @@
 
 import * as THREE from 'three';
 import { createSpaceMouse, AXES as SM_AXES, STALE_MS as SM_STALE_MS } from './spacemouse.js';
-import { createNavlib, probeDriver } from './navlib.js';
+import { createNavlib, probeDriver, buildCommands } from './navlib.js';
 
 const $ = (sel) => document.querySelector(sel);
 // everything is addressed relative to the directory index.html was served from, so the
@@ -578,11 +578,6 @@ const sm = createSpaceMouse({
   },
 });
 
-// TODO(spacemouse): button actions on the driver route. navlib lets an app register a
-// command tree (3dx_rpc:update { commands: { activeSet, tree } }); the driver then shows
-// those commands in 3Dconnexion Settings for mapping onto the puck's buttons and writes
-// `commands.activeCommand = <id>` when one is pressed. Wire home/fit/front/etc. through
-// that so the buttons are configurable per user, and add a "Buttons" block to this pane.
 // ---- 3DxWare driver route (web/navlib.js). The driver reads our scene and writes the
 // camera back; cadgang is Z-up and column-major, which is what these properties assume.
 
@@ -658,14 +653,41 @@ const navProps = {
       case 'hit.lookfrom': navHit.from = value; break;
       case 'hit.direction': navHit.dir = value; break;
       case 'hit.aperture': navHit.aperture = value; break;
+      case 'commands.activeCommand': runNavCommand(String(value)); break;
+      // a raw button the driver leaves to the application (rare; mapped buttons arrive as commands)
+      case 'events.keyPress': if (value === 1) homeView(); else if (value === 2) fitView(); break;
       default: break; // motion / transaction / pivot.visible / settings.changed / hit.selectionOnly need nothing here
     }
   },
 };
 
+// View presets the puck's buttons can be mapped to. The driver's generic profile maps the
+// MENU and FIT buttons to "Application Command #1" and "#2", i.e. the first two actions
+// published here, and 3Dconnexion Settings lets the user remap any of them.
+function presetView(yaw, pitch) { orbit.yaw = yaw; orbit.pitch = pitch; applyCamera(); }
+const NAV_COMMANDS = [
+  { id: 'fit', label: 'Fit model', description: 'Frame the whole model', run: fitView },
+  { id: 'home', label: 'Home view', description: 'Return to the start-up view', run: homeView },
+  { id: 'front', label: 'Front view', description: 'Look along +Y, Z up', run: () => presetView(0, 0) },
+  { id: 'top', label: 'Top view', description: 'Look straight down', run: () => presetView(0, 1.45) },
+  { id: 'right', label: 'Right view', description: 'Look along −X', run: () => presetView(Math.PI / 2, 0) },
+  { id: 'iso', label: 'Isometric view', description: 'Three-quarter view from the front-right', run: () => presetView(Math.PI / 4, 0.615) },
+];
+function runNavCommand(id) {
+  const cmd = NAV_COMMANDS.find((c) => c.id === id);
+  if (cmd) { cmd.run(); return true; }
+  if (/fit/i.test(id)) { fitView(); return true; }   // the driver's own reserved Fit id
+  return false;
+}
+
 const nav = createNavlib({
   props: navProps,
   appName: 'cadgang',
+  commands: buildCommands('cadgang', [{
+    id: 'cadgang', label: 'cadgang',
+    categories: [{ id: 'view', label: 'View', actions: NAV_COMMANDS.map(({ id, label, description }) => ({ id, label, description })) }],
+  }]),
+  debug: new URLSearchParams(location.search).has('navdebug'),   // ?navdebug logs every driver read/write
   onStatus: ({ connected, name, error }) => {
     if (error) { smStatusText = `error · ${error}`; smStatusKind = 'err'; smLastError = error; }
     else if (connected) { smStatusText = `${name} · driver route`; smStatusKind = 'ok'; smLastError = null; }
@@ -688,8 +710,11 @@ async function startTransport(fromGesture = false) {
   if (mode !== 'webhid') {
     driverInfo = await probeDriver();
     if (driverInfo) {
-      if (await nav.connect(driverInfo)) return true;
-    } else if (mode === 'driver') {
+      const ok = await nav.connect(driverInfo);
+      if (ok) return true;
+      if (driverInfo.guessed) driverInfo = null;   // nothing answered on the guessed port either
+    }
+    if (!driverInfo && mode === 'driver') {
       smStatusText = 'no 3Dconnexion driver answering on this machine'; smStatusKind = 'err';
       if (mousePaneVisible()) syncSmForm();
       return false;
@@ -774,7 +799,7 @@ function syncSmForm() {
   $('#smRaw').classList.toggle('sm-off', viaDriver);
   $('#smCover').classList.toggle('hidden', !viaDriver);
   $('#smSupport').textContent = viaDriver
-    ? 'Button actions are the driver\'s too: Fit and the view buttons work as usual. cadgang-specific button actions are not offered yet.'
+    ? 'Buttons: cadgang publishes Fit model, Home view, Front, Top, Right and Isometric to the driver. By default the MENU and FIT buttons trigger the first two; map any of them in 3Dconnexion Settings → Buttons.'
     : !sm.supported.hid && !driverInfo
     ? 'No WebHID in this browser and no 3Dconnexion driver answering. Install 3DxWare, or use Chrome, Edge or another Chromium browser over localhost or https.'
     : /open/i.test(smLastError || '')
