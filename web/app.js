@@ -661,9 +661,21 @@ const navProps = {
   },
 };
 
-// View presets the puck's buttons can be mapped to. The driver's generic profile maps the
-// MENU and FIT buttons to "Application Command #1" and "#2", i.e. the first two actions
-// published here, and 3Dconnexion Settings lets the user remap any of them.
+// View presets published to the driver so the puck's buttons can be mapped to them.
+//
+// TODO(spacemouse): buttons still do nothing on the driver route. Verified so far (macOS,
+// 3DxWare 10 / NL-Proxy 1.5.0, SpaceNavigator): the driver's generic "Web Applications"
+// profile maps the MENU and FIT buttons (ids 14/15 in its Buttons table) to "Application
+// Command #1/#2"; the command tree below is accepted and stored by the driver (see
+// ~/Library/Preferences/3Dconnexion/Applications/com.3dconnexion.nlserver_cadgang/
+// *.commands.plist) — yet a press produces no `commands.activeCommand`, no
+// `events.keyPress`, nothing on the wire (?navdebug shows only motion traffic).
+// Things left to try: (1) explicitly map the buttons to these commands in 3Dconnexion
+// Settings → Buttons and see whether a mapped command arrives; (2) send the tree with
+// `nodes` at every level exactly as the vendor client does, plus an `images` cache,
+// in case the driver hides un-iconed commands; (3) check whether the driver only
+// forwards commands to an app whose window it considers frontmost (the focus flag may
+// need the real window id); (4) compare against the SDK's web_threejs sample traffic.
 function presetView(yaw, pitch) { orbit.yaw = yaw; orbit.pitch = pitch; applyCamera(); }
 const NAV_COMMANDS = [
   { id: 'fit', label: 'Fit model', description: 'Frame the whole model', run: fitView },
@@ -799,7 +811,7 @@ function syncSmForm() {
   $('#smRaw').classList.toggle('sm-off', viaDriver);
   $('#smCover').classList.toggle('hidden', !viaDriver);
   $('#smSupport').textContent = viaDriver
-    ? 'Buttons: cadgang publishes Fit model, Home view, Front, Top, Right and Isometric to the driver. By default the MENU and FIT buttons trigger the first two; map any of them in 3Dconnexion Settings → Buttons.'
+    ? 'The puck\'s buttons follow 3Dconnexion Settings → Buttons. cadgang publishes Fit model, Home view, Front, Top, Right and Isometric there, but button presses are not reaching cadgang yet.'
     : !sm.supported.hid && !driverInfo
     ? 'No WebHID in this browser and no 3Dconnexion driver answering. Install 3DxWare, or use Chrome, Edge or another Chromium browser over localhost or https.'
     : /open/i.test(smLastError || '')
