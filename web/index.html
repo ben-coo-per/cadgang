@@ -31,7 +31,7 @@
       <button id="splitToggle" class="ghost" title="Switch between horizontal and vertical split">STACK</button>
       <button id="themeToggle" class="ghost" title="Toggle light / dark">DARK</button>
       <button id="colorToggle" class="ghost" title="Toggle per-part color / stainless">COLOR</button>
-      <button id="mouseBtn" class="ghost" title="3Dconnexion SpaceMouse — connect and tune a 3D mouse">3D MOUSE</button>
+      <button id="settingsBtn" class="ghost" title="Settings — display, 3D mouse">Settings</button>
       <span id="status" class="status"></span>
       <span class="version"><span class="idcode">CWT_SW_CADGANG_0700</span> <span class="idver">v0.7.0</span></span>
     </div>
@@ -97,35 +97,65 @@
         <button id="formulaClose">Close</button>
       </div>
     </div>
-    <div id="mouseModal" class="modal hidden">
+    <!-- settings: tabs on the left, the active pane on the right; every control applies immediately -->
+    <div id="settingsModal" class="modal modal-settings hidden">
       <div class="modal-head">
-        <h3>3D mouse</h3>
-        <span id="smStatus" class="sm-status">not connected</span>
+        <h3>Settings</h3>
+        <button id="settingsClose" class="ghost" title="Close (Esc)">Close</button>
       </div>
-      <div class="sm-row">
-        <button id="smConnect" class="primary" title="Pair a 3Dconnexion device (WebHID)">Connect</button>
-        <button id="smDisconnect" class="ghost" title="Release the device">Disconnect</button>
-        <button id="smReset" class="ghost" title="Restore default speeds and axis directions">Defaults</button>
+      <div class="settings-body">
+        <nav class="settings-tabs" aria-label="Settings sections">
+          <button class="settings-tab" data-tab="display">Display</button>
+          <button class="settings-tab" data-tab="mouse">3D mouse</button>
+        </nav>
+        <div class="settings-panes">
+          <section class="settings-pane hidden" data-pane="display">
+            <div class="settings-field">
+              <label for="setTheme">Theme</label>
+              <select id="setTheme"><option value="light">Light</option><option value="dark">Dark</option></select>
+              <p class="settings-hint">Graph, viewport and lighting follow the theme.</p>
+            </div>
+            <div class="settings-field">
+              <label for="setColor">Model colour</label>
+              <select id="setColor"><option value="0">Stainless</option><option value="1">Per-part colour</option></select>
+              <p class="settings-hint">Per-part tints each block's geometry and its stripe in the graph.</p>
+            </div>
+            <div class="settings-field">
+              <label for="setSplit">Layout</label>
+              <select id="setSplit"><option value="side">Graph beside viewport</option><option value="stacked">Graph above viewport</option></select>
+            </div>
+            <div class="settings-field">
+              <label for="setRes">Preview resolution <span id="setResValue" class="sm-num"></span></label>
+              <input id="setRes" type="range" min="24" max="180" />
+              <p class="settings-hint">Field meshing grid. Higher is smoother and slower; exports have their own resolution.</p>
+            </div>
+          </section>
+          <section class="settings-pane hidden" data-pane="mouse">
+            <div class="sm-row">
+              <button id="smConnect" class="primary" title="Pair a 3Dconnexion device (WebHID)">Connect</button>
+              <button id="smDisconnect" class="ghost" title="Release the device">Disconnect</button>
+              <button id="smReset" class="ghost" title="Restore default speeds and axis directions">Defaults</button>
+            </div>
+            <div id="smAxes" class="sm-axes"></div>
+            <div class="sm-grid">
+              <label>pan <input id="smPan" type="range" min="0.2" max="3" step="0.1" /><span class="sm-num">1.0×</span></label>
+              <label>zoom <input id="smZoom" type="range" min="0.2" max="3" step="0.1" /><span class="sm-num">1.0×</span></label>
+              <label>orbit <input id="smOrbit" type="range" min="0.2" max="3" step="0.1" /><span class="sm-num">1.0×</span></label>
+              <label>dead zone <input id="smDead" type="range" min="0" max="0.3" step="0.01" /><span class="sm-num">5%</span></label>
+            </div>
+            <div class="sm-inverts">
+              <span class="sm-inverts-label">invert</span>
+              <label><input type="checkbox" data-axis="x" /> x</label>
+              <label><input type="checkbox" data-axis="y" /> y</label>
+              <label><input type="checkbox" data-axis="z" /> z</label>
+              <label><input type="checkbox" data-axis="rx" /> rx</label>
+              <label><input type="checkbox" data-axis="rz" /> rz</label>
+            </div>
+            <p id="smSupport" class="sm-help"></p>
+          </section>
+        </div>
       </div>
-      <div id="smAxes" class="sm-axes"></div>
-      <div class="sm-grid">
-        <label>pan <input id="smPan" type="range" min="0.2" max="3" step="0.1" /><span class="sm-num">1.0×</span></label>
-        <label>zoom <input id="smZoom" type="range" min="0.2" max="3" step="0.1" /><span class="sm-num">1.0×</span></label>
-        <label>orbit <input id="smOrbit" type="range" min="0.2" max="3" step="0.1" /><span class="sm-num">1.0×</span></label>
-        <label>dead zone <input id="smDead" type="range" min="0" max="0.3" step="0.01" /><span class="sm-num">5%</span></label>
-      </div>
-      <div class="sm-inverts">
-        <span class="sm-inverts-label">invert</span>
-        <label><input type="checkbox" data-axis="x" /> x</label>
-        <label><input type="checkbox" data-axis="y" /> y</label>
-        <label><input type="checkbox" data-axis="z" /> z</label>
-        <label><input type="checkbox" data-axis="rx" /> rx</label>
-        <label><input type="checkbox" data-axis="rz" /> rz</label>
-      </div>
-      <p id="smSupport" class="sm-help"></p>
-      <div class="modal-actions">
-        <button id="smClose">Close</button>
-      </div>
+      <div class="settings-foot"><span id="settingsStatus" class="sm-status"></span></div>
     </div>
   </div>
 

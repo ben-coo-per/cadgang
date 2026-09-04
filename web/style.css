@@ -504,14 +504,43 @@ footer {
 .ac-pop .ac-name { font-weight: 700; color: var(--ink); }
 .ac-pop .ac-val { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 
+/* ------------------------------------------------------------ settings modal */
+
+.modal-settings { width: 680px; max-width: 94vw; padding: 0; display: flex; flex-direction: column; max-height: 86vh; }
+.modal-settings .modal-head { margin: 0; padding: var(--sp-4) var(--sp-5); border-bottom: var(--bw-hair) solid var(--rule); }
+.modal-settings .modal-head button { padding: 6px 12px; font-size: var(--fs-12); }
+.settings-body { display: flex; min-height: 0; flex: 1; }
+.settings-tabs {
+  flex: 0 0 150px; display: flex; flex-direction: column; padding: var(--sp-3) 0;
+  border-right: var(--bw-hair) solid var(--rule); background: var(--paper-2);
+}
+.settings-tab {
+  text-align: left; padding: 10px var(--sp-5); border: 0; border-left: 3px solid transparent;
+  background: transparent; color: var(--ink-faint); font-size: var(--fs-12); border-radius: 0;
+}
+.settings-tab:hover { opacity: 1; color: var(--ink); }
+.settings-tab.active { color: var(--ink); border-left-color: var(--signal-orange); background: var(--paper); }
+.settings-panes { flex: 1; min-width: 0; padding: var(--sp-5); overflow-y: auto; }
+.settings-pane > :last-child { margin-bottom: 0; }
+.settings-field { margin-bottom: var(--sp-4); }
+.settings-field > label {
+  display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px;
+  color: var(--ink-faint); font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--ls-label);
+}
+.settings-field select { width: 100%; }
+.settings-field input[type="range"] { width: 100%; }
+.settings-hint { margin: 6px 0 0; color: var(--ink-faint); font-size: var(--fs-12); line-height: 1.5; }
+.settings-foot {
+  padding: 10px var(--sp-5); border-top: var(--bw-hair) solid var(--rule);
+  display: flex; align-items: center; min-height: 36px;
+}
+.settings-foot .sm-status { max-width: 100%; }
+
 /* ------------------------------------------------------------ 3D mouse (SpaceMouse) */
 
-#mouseBtn { white-space: nowrap; }
-#mouseBtn.sm-on { border-color: var(--signal-orange); color: var(--signal-orange); }
-#mouseModal { width: 440px; max-width: 92vw; }
 .sm-status {
   color: var(--ink-faint); font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--ls-label);
-  text-align: right; max-width: 68%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .sm-status.ok { color: var(--signal-green); }
 .sm-status.err { color: var(--signal-red); }

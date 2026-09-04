@@ -554,22 +554,21 @@ function loadSmSettings() {
 let smSettings = loadSmSettings();
 const saveSmSettings = () => localStorage.setItem('cadgang:spacemouse', JSON.stringify(smSettings));
 
-const mouseBtn = $('#mouseBtn');
-const mouseModal = $('#mouseModal');
-const smStatus = $('#smStatus');
+const settingsModal = $('#settingsModal');
+const mousePane = settingsModal.querySelector('[data-pane="mouse"]');
+const mousePaneVisible = () => !settingsModal.classList.contains('hidden') && !mousePane.classList.contains('hidden');
+let smStatusText = 'not connected', smStatusKind = '';
 
 const sm = createSpaceMouse({
   // `?nohid` simulates a browser without WebHID (Safari/Firefox) for testing the fallback path
   disableHid: new URLSearchParams(location.search).has('nohid'),
   onStatus: ({ connected, transport, name, error }) => {
-    mouseBtn.classList.toggle('sm-on', connected);
-    mouseBtn.title = connected ? `3D mouse connected: ${name}` : '3Dconnexion SpaceMouse — connect and tune a 3D mouse';
-    smStatus.textContent = error ? `error · ${error}`
+    smStatusText = error ? `error · ${error}`
       : connected ? `${name} · ${transport === 'hid' ? 'WebHID' : 'Gamepad API'}` : 'not connected';
-    smStatus.className = 'sm-status' + (error ? ' err' : connected ? ' ok' : '');
+    smStatusKind = error ? 'err' : connected ? 'ok' : '';
     if (error) showErr(new Error(error));
     else if (connected) showOk(`3D MOUSE · ${name.toUpperCase()}`);
-    if (!mouseModal.classList.contains('hidden')) syncSmForm();
+    if (mousePaneVisible()) syncSmForm();
   },
   onButton: (i, pressed) => {
     if (!pressed) return;
@@ -636,24 +635,29 @@ function syncSmForm() {
     input.value = smSettings[key];
     input.nextElementSibling.textContent = key === 'deadzone' ? `${Math.round(smSettings.deadzone * 100)}%` : `${smSettings[key].toFixed(1)}×`;
   }
-  for (const box of mouseModal.querySelectorAll('input[data-axis]')) box.checked = !!smSettings.invert[box.dataset.axis];
+  for (const box of mousePane.querySelectorAll('input[data-axis]')) box.checked = !!smSettings.invert[box.dataset.axis];
   $('#smDisconnect').disabled = !sm.state.transport;
   $('#smConnect').disabled = !sm.supported.hid;
   $('#smSupport').textContent = sm.supported.hid
     ? 'Left button = home view · right button = fit to model.'
     : 'No WebHID in this browser, so a SpaceMouse can\'t be paired here. Use Chrome, Edge or another Chromium browser over localhost or https.';
+  setSettingsStatus(smStatusText, smStatusKind);
 }
 for (const [key, sel] of SM_SLIDERS) {
   $(sel).addEventListener('input', (e) => {
     smSettings[key] = parseFloat(e.target.value);
     saveSmSettings();
     syncSmForm();
+    flashSettingsStatus(`${key === 'deadzone' ? 'dead zone' : key} · ${e.target.nextElementSibling.textContent}`);
   });
 }
-for (const box of mouseModal.querySelectorAll('input[data-axis]')) {
-  box.addEventListener('change', () => { smSettings.invert[box.dataset.axis] = box.checked; saveSmSettings(); });
+for (const box of mousePane.querySelectorAll('input[data-axis]')) {
+  box.addEventListener('change', () => {
+    smSettings.invert[box.dataset.axis] = box.checked; saveSmSettings();
+    flashSettingsStatus(`${box.dataset.axis} ${box.checked ? 'inverted' : 'normal'}`);
+  });
 }
-$('#smReset').onclick = () => { smSettings = { ...SM_DEFAULTS, invert: { ...SM_DEFAULTS.invert } }; saveSmSettings(); syncSmForm(); };
+$('#smReset').onclick = () => { smSettings = { ...SM_DEFAULTS, invert: { ...SM_DEFAULTS.invert } }; saveSmSettings(); syncSmForm(); flashSettingsStatus('3D mouse defaults restored'); };
 $('#smConnect').onclick = async () => {
   try {
     const ok = await sm.request();
@@ -662,20 +666,71 @@ $('#smConnect').onclick = async () => {
   syncSmForm();
 };
 $('#smDisconnect').onclick = async () => { await sm.disconnect(); syncSmForm(); };
-mouseBtn.onclick = () => {
+// ---- settings modal: tabs on the left, one pane on the right, status line at the foot.
+// Every control applies the moment it changes; there is no save step.
+
+const settingsStatus = $('#settingsStatus');
+const SETTINGS_TABS = [...settingsModal.querySelectorAll('.settings-tab')].map((b) => b.dataset.tab);
+let settingsTab = SETTINGS_TABS.includes(localStorage.getItem('cadgang:settingsTab')) ? localStorage.getItem('cadgang:settingsTab') : SETTINGS_TABS[0];
+let settingsFlashTimer = null;
+
+/** Persistent footer text (e.g. the 3D-mouse connection state). kind: '' | 'ok' | 'err' */
+function setSettingsStatus(text, kind = '') {
+  if (settingsFlashTimer) { clearTimeout(settingsFlashTimer); settingsFlashTimer = null; }
+  settingsStatus.textContent = text;
+  settingsStatus.className = 'sm-status' + (kind ? ` ${kind}` : '');
+}
+/** Briefly confirm an applied change, then fall back to the pane's resting status. */
+function flashSettingsStatus(text) {
+  setSettingsStatus(`applied · ${text}`, 'ok');
+  settingsFlashTimer = setTimeout(() => { settingsFlashTimer = null; showSettingsTab(settingsTab, true); }, 1800);
+}
+
+function showSettingsTab(tab, statusOnly = false) {
+  settingsTab = tab;
+  localStorage.setItem('cadgang:settingsTab', tab);
+  if (!statusOnly) {
+    for (const b of settingsModal.querySelectorAll('.settings-tab')) b.classList.toggle('active', b.dataset.tab === tab);
+    for (const p of settingsModal.querySelectorAll('.settings-pane')) p.classList.toggle('hidden', p.dataset.pane !== tab);
+  }
+  if (tab === 'mouse') {
+    syncSmForm(); // also sets the footer to the connection state
+    // Opening this pane is the only "trying to use a 3D mouse" signal a browser without
+    // WebHID can give us: Safari and Firefox never enumerate the puck (their Gamepad API
+    // matches joysticks and gamepads, not multi-axis controllers), so there is nothing to
+    // detect at the device level. Warn once per session, dismissably.
+    if (!statusOnly && !sm.supported.hid) {
+      showToast('No 3D mouse support in this browser: Safari and Firefox can\'t see 3Dconnexion devices. Open cadgang in Chrome, Edge or another Chromium browser to use a SpaceMouse.', { once: 'spacemouse-nohid' });
+    }
+  } else if (tab === 'display') {
+    if (!statusOnly) syncDisplayForm();
+    setSettingsStatus('changes apply immediately');
+  }
+}
+for (const b of settingsModal.querySelectorAll('.settings-tab')) b.onclick = () => showSettingsTab(b.dataset.tab);
+
+function openSettings(tab = settingsTab) {
   closeModals();
   $('#modalBackdrop').classList.remove('hidden');
-  mouseModal.classList.remove('hidden');
-  syncSmForm();
-  // Opening the panel is the only "trying to use a 3D mouse" signal a browser without
-  // WebHID can give us: Safari and Firefox never enumerate the puck (their Gamepad API
-  // matches joysticks and gamepads, not multi-axis controllers), so there is nothing to
-  // detect at the device level. Warn once per session, dismissably.
-  if (!sm.supported.hid) {
-    showToast('No 3D mouse support in this browser: Safari and Firefox can\'t see 3Dconnexion devices. Open cadgang in Chrome, Edge or another Chromium browser to use a SpaceMouse.', { once: 'spacemouse-nohid' });
-  }
-};
-$('#smClose').onclick = () => closeModals();
+  settingsModal.classList.remove('hidden');
+  showSettingsTab(tab);
+}
+$('#settingsBtn').onclick = () => openSettings();
+$('#settingsClose').onclick = () => closeModals();
+
+// Display pane: mirrors the header quick-toggles through the same setters.
+function syncDisplayForm() {
+  $('#setTheme').value = theme;
+  $('#setColor').value = colorMode ? '1' : '0';
+  $('#setSplit').value = splitLayout;
+  $('#setRes').value = $('#resolution').value;
+  $('#setResValue').textContent = $('#resolution').value;
+}
+$('#setTheme').onchange = (e) => { setTheme(e.target.value); flashSettingsStatus(`theme ${theme}`); };
+$('#setColor').onchange = (e) => { setColorMode(e.target.value === '1'); flashSettingsStatus(colorMode ? 'per-part colour' : 'stainless'); };
+$('#setSplit').onchange = (e) => { setSplit(e.target.value); flashSettingsStatus(splitLayout === 'stacked' ? 'stacked layout' : 'side-by-side layout'); };
+$('#setRes').oninput = (e) => { $('#resolution').value = e.target.value; $('#resolutionValue').textContent = e.target.value; $('#setResValue').textContent = e.target.value; };
+$('#setRes').onchange = (e) => { refreshMesh(); flashSettingsStatus(`resolution ${e.target.value}`); };
 
 let lastFrame = performance.now();
 (function animate(now) {
@@ -683,7 +738,7 @@ let lastFrame = performance.now();
   const dt = clamp((now - lastFrame) / 1000, 0, 0.05); // cap so a background tab can't lurch on return
   lastFrame = now;
   driveSpaceMouse(dt, now);
-  if (!mouseModal.classList.contains('hidden')) renderSmAxes(now);
+  if (mousePaneVisible()) renderSmAxes(now);
   renderer.render(scene, camera);
 })(lastFrame);
 
@@ -1815,7 +1870,7 @@ function closeModals() {
   saveModal.classList.add('hidden');
   openModal.classList.add('hidden');
   formulaModal.classList.add('hidden');
-  mouseModal.classList.add('hidden');
+  settingsModal.classList.add('hidden');
 }
 backdrop.addEventListener('pointerdown', (e) => { if (e.target === backdrop) closeModals(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModals(); });
@@ -2129,11 +2184,12 @@ function applySplit() {
   $('#splitToggle').textContent = splitLayout === 'stacked' ? 'SIDE' : 'STACK';
   resize();
 }
-$('#splitToggle').onclick = () => {
-  splitLayout = splitLayout === 'stacked' ? 'side' : 'stacked';
+function setSplit(layout) {
+  splitLayout = layout === 'stacked' ? 'stacked' : 'side';
   localStorage.setItem('cadgang:split', splitLayout);
   applySplit();
-};
+}
+$('#splitToggle').onclick = () => setSplit(splitLayout === 'stacked' ? 'side' : 'stacked');
 
 // ------------------------------------------------------------ theme + color toggles
 
@@ -2142,25 +2198,27 @@ function applyTheme() {
   $('#themeToggle').textContent = theme === 'dark' ? 'LIGHT' : 'DARK';
   applyViewportTheme();
 }
-$('#themeToggle').onclick = () => {
-  theme = theme === 'dark' ? 'light' : 'dark';
+function setTheme(t) {
+  theme = t === 'dark' ? 'dark' : 'light';
   localStorage.setItem('cadgang:theme', theme);
   applyTheme();
   recolorMesh();               // vertex colors + material lightness depend on theme
   if (colorMode) renderGraph(); // node stripes track theme lightness
-};
+}
+$('#themeToggle').onclick = () => setTheme(theme === 'dark' ? 'light' : 'dark');
 
 function applyColorMode() {
   document.documentElement.classList.toggle('color-mode', colorMode);
   $('#colorToggle').textContent = colorMode ? 'METAL' : 'COLOR';
 }
-$('#colorToggle').onclick = () => {
-  colorMode = !colorMode;
+function setColorMode(on) {
+  colorMode = !!on;
   localStorage.setItem('cadgang:colorMode', colorMode ? '1' : '0');
   applyColorMode();
   renderGraph();   // stripes flip between metal category and per-node hue
   refreshMesh();   // re-fetch with/without &colors=1
-};
+}
+$('#colorToggle').onclick = () => setColorMode(!colorMode);
 
 // ------------------------------------------------------------ user variables
 

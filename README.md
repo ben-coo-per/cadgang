@@ -43,7 +43,7 @@ Open http://localhost:4477 — the viewport live-updates (WebSocket) whenever th
 - **STACK / SIDE** toggles the graph/viewport split between stacked and side-by-side; **DARK** toggles the theme; **COLOR** switches per-part color vs. stainless render
 - **Save / Open** stores named models server-side (`saves/`)
 - Click the footer formula to see the whole model as a nested functional expression
-- **3D MOUSE** connects a 3Dconnexion SpaceMouse to the viewport — see [3D mouse](#3d-mouse-spacemouse)
+- **Settings** opens a tabbed settings window: **Display** (theme, model colour, layout, preview resolution — the same switches as the header buttons) and **3D mouse** for a 3Dconnexion SpaceMouse — see [3D mouse](#3d-mouse-spacemouse). Every setting applies as soon as you change it.
 
 ### 3D mouse (SpaceMouse)
 
@@ -60,11 +60,11 @@ Any 3Dconnexion puck (SpaceNavigator, SpaceMouse Compact / Wireless / Pro / Ente
 
 Roll (tilting the cap sideways) is ignored — the camera is a Z-up turntable and has no roll.
 
-**Setup.** Click **3D MOUSE** in the header, then **Connect** and pick the device in the browser's prompt. The browser remembers the grant, so from then on the puck is live as soon as the page loads. The panel shows the six axes moving in real time, plus speed sliders, a dead-zone slider and per-axis invert toggles (device firmware and hands disagree about which way is "forward"; flip an axis rather than fight it). Settings persist in the browser.
+**Setup.** Open **Settings → 3D mouse**, click **Connect** and pick the device in the browser's prompt. The browser remembers the grant, so from then on the puck is live as soon as the page loads. The panel shows the six axes moving in real time, plus speed sliders, a dead-zone slider and per-axis invert toggles (device firmware and hands disagree about which way is "forward"; flip an axis rather than fight it). Settings persist in the browser.
 
 **Browser support.** The puck is read directly over [WebHID](https://developer.mozilla.org/en-US/docs/Web/API/WebHID_API) — no vendor driver is needed, and it works the same on macOS, Windows and Linux. WebHID exists in Chrome, Edge, Opera and other Chromium browsers, and only on a secure origin (`localhost` or `https`).
 
-**Safari and Firefox cannot use a SpaceMouse.** They have no WebHID, and their Gamepad API only enumerates HID joysticks and gamepads — a 3Dconnexion puck is a *multi-axis controller*, so those browsers never see it at all (Chromium's Gamepad API does, which is why cadgang keeps a Gamepad fallback for Chromium builds with WebHID switched off). Opening the 3D MOUSE panel in such a browser shows a dismissable notice saying so; there is no way to detect the device itself there.
+**Safari and Firefox cannot use a SpaceMouse.** They have no WebHID, and their Gamepad API only enumerates HID joysticks and gamepads — a 3Dconnexion puck is a *multi-axis controller*, so those browsers never see it at all (Chromium's Gamepad API does, which is why cadgang keeps a Gamepad fallback for Chromium builds with WebHID switched off). Opening the 3D mouse settings tab in such a browser shows a dismissable notice saying so; there is no way to detect the device itself there.
 
 Platform notes:
 
