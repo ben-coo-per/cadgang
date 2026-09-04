@@ -557,7 +557,7 @@ const saveSmSettings = () => localStorage.setItem('cadgang:spacemouse', JSON.str
 const settingsModal = $('#settingsModal');
 const mousePane = settingsModal.querySelector('[data-pane="mouse"]');
 const mousePaneVisible = () => !settingsModal.classList.contains('hidden') && !mousePane.classList.contains('hidden');
-let smStatusText = 'not connected', smStatusKind = '';
+let smStatusText = 'not connected', smStatusKind = '', smLastError = null;
 
 const sm = createSpaceMouse({
   // `?nohid` simulates a browser without WebHID (Safari/Firefox) for testing the fallback path
@@ -566,8 +566,7 @@ const sm = createSpaceMouse({
     smStatusText = error ? `error · ${error}`
       : connected ? `${name} · ${transport === 'hid' ? 'WebHID' : 'Gamepad API'}` : 'not connected';
     smStatusKind = error ? 'err' : connected ? 'ok' : '';
-    if (error) showErr(new Error(error));
-    else if (connected) showOk(`3D MOUSE · ${name.toUpperCase()}`);
+    smLastError = error || null;
     if (mousePaneVisible()) syncSmForm();
   },
   onButton: (i, pressed) => {
@@ -628,6 +627,7 @@ function renderSmAxes(now) {
   }
 }
 
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || '') || /Macintosh/.test(navigator.userAgent);
 const SM_SLIDERS = [['pan', '#smPan'], ['zoom', '#smZoom'], ['orbit', '#smOrbit'], ['deadzone', '#smDead']];
 function syncSmForm() {
   for (const [key, sel] of SM_SLIDERS) {
@@ -638,9 +638,13 @@ function syncSmForm() {
   for (const box of mousePane.querySelectorAll('input[data-axis]')) box.checked = !!smSettings.invert[box.dataset.axis];
   $('#smDisconnect').disabled = !sm.state.transport;
   $('#smConnect').disabled = !sm.supported.hid;
-  $('#smSupport').textContent = sm.supported.hid
-    ? 'Left button = home view · right button = fit to model.'
-    : 'No WebHID in this browser, so a SpaceMouse can\'t be paired here. Use Chrome, Edge or another Chromium browser over localhost or https.';
+  $('#smSupport').textContent = !sm.supported.hid
+    ? 'No WebHID in this browser, so a SpaceMouse can\'t be paired here. Use Chrome, Edge or another Chromium browser over localhost or https.'
+    : /open/i.test(smLastError || '')
+      ? (IS_MAC
+        ? 'The 3Dconnexion driver has the device open for itself, so the browser can\'t read it. Quit 3DconnexionHelper (the 3Dconnexion icon in the menu bar, or Activity Monitor), then Connect again. To keep both, uninstall 3DxWare — cadgang doesn\'t need it.'
+        : 'Another program has the device open. Quit 3DxWare or any other app using the 3D mouse, then Connect again.')
+      : 'Left button = home view · right button = fit to model.';
   setSettingsStatus(smStatusText, smStatusKind);
 }
 for (const [key, sel] of SM_SLIDERS) {
@@ -661,9 +665,12 @@ $('#smReset').onclick = () => { smSettings = { ...SM_DEFAULTS, invert: { ...SM_D
 $('#smConnect').onclick = async () => {
   try {
     const ok = await sm.request();
-    if (!ok) showOk('NO 3D MOUSE SELECTED');
-  } catch (e) { showErr(e); }
-  syncSmForm();
+    syncSmForm();
+    if (!ok && !smLastError) setSettingsStatus('no device chosen');
+  } catch (e) {
+    smLastError = e.message; syncSmForm();
+    setSettingsStatus(`error · ${e.message}`, 'err');
+  }
 };
 $('#smDisconnect').onclick = async () => { await sm.disconnect(); syncSmForm(); };
 // ---- settings modal: tabs on the left, one pane on the right, status line at the foot.

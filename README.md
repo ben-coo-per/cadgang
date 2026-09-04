@@ -68,7 +68,7 @@ Roll (tilting the cap sideways) is ignored — the camera is a Z-up turntable an
 
 Platform notes:
 
-- **macOS** — if 3DxWare is running it holds the device exclusively and the browser sees nothing move. Quit the 3Dconnexion helper from its menu-bar icon (or uninstall the driver; this app doesn't need it).
+- **macOS** — if 3DxWare is installed, its helper opens the device *exclusively* (IOKit reports `kIOReturnExclusiveAccess`), so Chrome's **Connect** fails with "Failed to open the device". Quit **3DconnexionHelper** from the 3Dconnexion menu-bar icon or Activity Monitor and connect again; to keep both permanently, uninstall 3DxWare — cadgang doesn't need it.
 - **Windows** — works out of the box, with or without 3DxWare.
 - **Linux** — the browser needs read access to the `hidraw` node. Add a udev rule and re-plug the device:
   ```
