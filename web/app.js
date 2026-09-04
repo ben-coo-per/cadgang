@@ -2,6 +2,7 @@
 
 import * as THREE from 'three';
 import { createSpaceMouse, AXES as SM_AXES, STALE_MS as SM_STALE_MS } from './spacemouse.js';
+import { createNavlib, probeDriver } from './navlib.js';
 
 const $ = (sel) => document.querySelector(sel);
 // everything is addressed relative to the directory index.html was served from, so the
@@ -539,6 +540,7 @@ window.addEventListener('resize', resize);
 // meaning in a Z-up turntable camera and is ignored. Left button = home, right = fit.
 
 const SM_DEFAULTS = {
+  transport: 'auto',   // 'auto' | 'driver' (3DxWare navlib) | 'webhid' (raw device)
   pan: 1, zoom: 1, orbit: 1, deadzone: 0.05,
   invert: { x: false, y: false, z: false, rx: false, ry: false, rz: false },
 };
@@ -575,13 +577,136 @@ const sm = createSpaceMouse({
     else if (i === 1) fitView();
   },
 });
-sm.autoConnect();
+
+// ---- 3DxWare driver route (web/navlib.js). The driver reads our scene and writes the
+// camera back; cadgang is Z-up and column-major, which is what these properties assume.
+
+const _navM = new THREE.Matrix4(), _navS = new THREE.Vector3(), _navFwd = new THREE.Vector3(), _navRel = new THREE.Vector3();
+const NAV_ZUP = [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1]; // navlib is Y-up; this maps its Y onto our Z
+const navHit = { from: null, dir: null, aperture: 0 };
+
+function sceneExtents() {
+  const box = new THREE.Box3();
+  if (meshObj) box.expandByObject(meshObj);
+  if (edgeObj) box.expandByObject(edgeObj);
+  return box.isEmpty() ? null : [box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z];
+}
+
+// Adopt a camera-to-world matrix from the driver, then re-derive the orbit parameters so
+// a later mouse drag or wheel continues from exactly this view instead of snapping back.
+function setCameraFromAffine(a) {
+  _navM.fromArray(a);
+  _navM.decompose(camera.position, camera.quaternion, _navS);
+  _navFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
+  // keep the orbit centre on the new view axis, as close as possible to the old target
+  _navRel.subVectors(orbit.target, camera.position);
+  const along = _navRel.dot(_navFwd);
+  const d = along > 0.5 ? along : orbit.dist;
+  orbit.target.copy(camera.position).addScaledVector(_navFwd, d);
+  orbit.dist = clamp(d, 2, 2000);
+  _navRel.subVectors(camera.position, orbit.target);
+  orbit.pitch = Math.asin(clamp(_navRel.z / d, -1, 1));
+  orbit.yaw = Math.atan2(_navRel.x, -_navRel.y);
+  camera.updateMatrixWorld();
+}
+
+const navProps = {
+  read(name) {
+    switch (name) {
+      case 'view.affine': camera.updateMatrixWorld(); return camera.matrixWorld.toArray();
+      case 'view.perspective': return true;
+      case 'view.rotatable': return true;
+      case 'view.fov': return THREE.MathUtils.degToRad(camera.fov);
+      case 'view.frustum': {
+        const h = camera.near * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2), w = h * camera.aspect;
+        return [-w, w, -h, h, camera.near, camera.far];
+      }
+      case 'view.target':
+      case 'pivot.position': return orbit.target.toArray();
+      case 'view.extents': return null;
+      case 'view.constructionPlane':
+      case 'model.floorPlane': return [0, 0, 1, 0];
+      case 'model.extents': return sceneExtents();
+      case 'model.unitsToMeters': return 0.001;
+      case 'selection.empty': return true;
+      case 'selection.extents':
+      case 'selection.affine':
+      case 'pointer.position': return null;
+      case 'coordinateSystem': return NAV_ZUP;
+      case 'views.front': return [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, -orbit.dist, 0, 1];
+      case 'frame.time': return Date.now();
+      case 'hit.lookat': {
+        if (!meshObj || !navHit.from || !navHit.dir) return null;
+        raycaster.set(new THREE.Vector3().fromArray(navHit.from), new THREE.Vector3().fromArray(navHit.dir).normalize());
+        const hit = raycaster.intersectObject(meshObj, false)[0];
+        return hit ? hit.point.toArray() : null;
+      }
+      default: return undefined;
+    }
+  },
+  write(name, value) {
+    switch (name) {
+      case 'view.affine': if (Array.isArray(value) && value.length === 16) setCameraFromAffine(value); break;
+      case 'view.fov': if (typeof value === 'number' && value > 0) { camera.fov = THREE.MathUtils.radToDeg(value); camera.updateProjectionMatrix(); } break;
+      case 'view.target':
+      case 'pivot.position': if (Array.isArray(value) && value.length === 3) { orbit.target.fromArray(value); orbit.dist = camera.position.distanceTo(orbit.target) || orbit.dist; } break;
+      case 'hit.lookfrom': navHit.from = value; break;
+      case 'hit.direction': navHit.dir = value; break;
+      case 'hit.aperture': navHit.aperture = value; break;
+      default: break; // motion / transaction / pivot.visible / settings.changed / hit.selectionOnly need nothing here
+    }
+  },
+};
+
+const nav = createNavlib({
+  props: navProps,
+  appName: 'cadgang',
+  onStatus: ({ connected, name, error }) => {
+    if (error) { smStatusText = `error · ${error}`; smStatusKind = 'err'; smLastError = error; }
+    else if (connected) { smStatusText = `${name} · driver route`; smStatusKind = 'ok'; smLastError = null; }
+    else if (!sm.state.transport) { smStatusText = 'not connected'; smStatusKind = ''; }
+    if (mousePaneVisible()) syncSmForm();
+  },
+});
+window.addEventListener('focus', () => nav.setFocus(true));
+window.addEventListener('blur', () => nav.setFocus(false));
+
+let driverInfo = null;   // last probe result: { port, version } or null
+
+/**
+ * Bring up whichever route the setting asks for. 'auto' prefers the vendor driver when
+ * it answers (that is also the only route that works while it holds the device), and
+ * falls back to the raw device. `fromGesture` lets the WebHID picker open.
+ */
+async function startTransport(fromGesture = false) {
+  const mode = smSettings.transport;
+  if (mode !== 'webhid') {
+    driverInfo = await probeDriver();
+    if (driverInfo) {
+      if (await nav.connect(driverInfo)) return true;
+    } else if (mode === 'driver') {
+      smStatusText = 'no 3Dconnexion driver answering on this machine'; smStatusKind = 'err';
+      if (mousePaneVisible()) syncSmForm();
+      return false;
+    }
+  }
+  if (mode !== 'driver' && sm.supported.hid) {
+    return fromGesture ? sm.request() : sm.autoConnect();
+  }
+  return false;
+}
+async function stopTransport() {
+  nav.disconnect();
+  await sm.disconnect();
+}
+startTransport();
 
 const SM_ROT = 2.2;   // rad/s at full deflection (× the ORBIT slider)
 const SM_PAN = 0.8;   // view-widths per second at full deflection (× PAN)
 const SM_ZOOM = 1.2;  // e-folds of camera distance per second (× ZOOM)
 const _smRight = new THREE.Vector3(), _smUp = new THREE.Vector3();
 function driveSpaceMouse(dt, now) {
+  if (nav.state.connected) return;   // 3DxWare computes the camera itself (see navlib props below)
   const a = sm.poll(now, { deadzone: smSettings.deadzone });
   if (!a) return;
   const inv = smSettings.invert;
@@ -636,16 +761,23 @@ function syncSmForm() {
     input.nextElementSibling.textContent = key === 'deadzone' ? `${Math.round(smSettings.deadzone * 100)}%` : `${smSettings[key].toFixed(1)}×`;
   }
   for (const box of mousePane.querySelectorAll('input[data-axis]')) box.checked = !!smSettings.invert[box.dataset.axis];
-  $('#smDisconnect').disabled = !sm.state.transport;
-  $('#smConnect').disabled = !sm.supported.hid;
-  $('#smSupport').textContent = !sm.supported.hid
-    ? 'No WebHID in this browser, so a SpaceMouse can\'t be paired here. Use Chrome, Edge or another Chromium browser over localhost or https.'
+  $('#smTransport').value = smSettings.transport;
+  const viaDriver = nav.state.connected;
+  $('#smDisconnect').disabled = !sm.state.transport && !viaDriver;
+  $('#smConnect').disabled = smSettings.transport === 'webhid' ? !sm.supported.hid : false;
+  // while the driver steers, speed/axis/invert live in 3Dconnexion's own settings
+  $('#smRaw').classList.toggle('sm-off', viaDriver);
+  $('#smSupport').textContent = viaDriver
+    ? 'The 3Dconnexion driver is computing the motion, so speed, axis directions and button actions come from its own settings (the 3Dconnexion menu-bar icon). Its Fit and view buttons work as usual.'
+    : !sm.supported.hid && !driverInfo
+    ? 'No WebHID in this browser and no 3Dconnexion driver answering. Install 3DxWare, or use Chrome, Edge or another Chromium browser over localhost or https.'
     : /open/i.test(smLastError || '')
       ? (IS_MAC
         ? 'The 3Dconnexion driver has the device open for itself, so the browser can\'t read it. Quit 3DconnexionHelper (the 3Dconnexion icon in the menu bar, or Activity Monitor), then Connect again. To keep both, uninstall 3DxWare — cadgang doesn\'t need it.'
         : 'Another program has the device open. Quit 3DxWare or any other app using the 3D mouse, then Connect again.')
       : 'Left button = home view · right button = fit to model.';
   setSettingsStatus(smStatusText, smStatusKind);
+  $('#smConnect').textContent = viaDriver || sm.state.transport ? 'Reconnect' : 'Connect';
 }
 for (const [key, sel] of SM_SLIDERS) {
   $(sel).addEventListener('input', (e) => {
@@ -663,8 +795,10 @@ for (const box of mousePane.querySelectorAll('input[data-axis]')) {
 }
 $('#smReset').onclick = () => { smSettings = { ...SM_DEFAULTS, invert: { ...SM_DEFAULTS.invert } }; saveSmSettings(); syncSmForm(); flashSettingsStatus('3D mouse defaults restored'); };
 $('#smConnect').onclick = async () => {
+  await stopTransport();
+  setSettingsStatus('connecting…');
   try {
-    const ok = await sm.request();
+    const ok = await startTransport(true);
     syncSmForm();
     if (!ok && !smLastError) setSettingsStatus('no device chosen');
   } catch (e) {
@@ -672,7 +806,14 @@ $('#smConnect').onclick = async () => {
     setSettingsStatus(`error · ${e.message}`, 'err');
   }
 };
-$('#smDisconnect').onclick = async () => { await sm.disconnect(); syncSmForm(); };
+$('#smDisconnect').onclick = async () => { await stopTransport(); smStatusText = 'not connected'; smStatusKind = ''; smLastError = null; syncSmForm(); };
+$('#smTransport').onchange = async (e) => {
+  smSettings.transport = e.target.value; saveSmSettings();
+  await stopTransport(); smLastError = null;
+  await startTransport(false);
+  syncSmForm();
+  flashSettingsStatus(`route · ${e.target.options[e.target.selectedIndex].textContent.toLowerCase()}`);
+};
 // ---- settings modal: tabs on the left, one pane on the right, status line at the foot.
 // Every control applies the moment it changes; there is no save step.
 
@@ -706,8 +847,8 @@ function showSettingsTab(tab, statusOnly = false) {
     // WebHID can give us: Safari and Firefox never enumerate the puck (their Gamepad API
     // matches joysticks and gamepads, not multi-axis controllers), so there is nothing to
     // detect at the device level. Warn once per session, dismissably.
-    if (!statusOnly && !sm.supported.hid) {
-      showToast('No 3D mouse support in this browser: Safari and Firefox can\'t see 3Dconnexion devices. Open cadgang in Chrome, Edge or another Chromium browser to use a SpaceMouse.', { once: 'spacemouse-nohid' });
+    if (!statusOnly && !sm.supported.hid && !driverInfo) {
+      showToast('No 3D mouse support in this browser: Safari and Firefox can\'t see 3Dconnexion devices directly. Install the 3Dconnexion driver (3DxWare), or open cadgang in Chrome, Edge or another Chromium browser.', { once: 'spacemouse-nohid' });
     }
   } else if (tab === 'display') {
     if (!statusOnly) syncDisplayForm();

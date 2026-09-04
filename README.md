@@ -62,15 +62,18 @@ Roll (tilting the cap sideways) is ignored — the camera is a Z-up turntable an
 
 **Setup.** Open **Settings → 3D mouse**, click **Connect** and pick the device in the browser's prompt. The browser remembers the grant, so from then on the puck is live as soon as the page loads. The panel shows the six axes moving in real time, plus speed sliders, a dead-zone slider and per-axis invert toggles (device firmware and hands disagree about which way is "forward"; flip an axis rather than fight it). Settings persist in the browser.
 
-**Browser support.** The puck is read directly over [WebHID](https://developer.mozilla.org/en-US/docs/Web/API/WebHID_API) — no vendor driver is needed, and it works the same on macOS, Windows and Linux. WebHID exists in Chrome, Edge, Opera and other Chromium browsers, and only on a secure origin (`localhost` or `https`).
+**Two routes to the device.** Settings → 3D mouse → *Route* picks one; *Auto* tries the driver first.
 
-**Safari and Firefox cannot use a SpaceMouse.** They have no WebHID, and their Gamepad API only enumerates HID joysticks and gamepads — a 3Dconnexion puck is a *multi-axis controller*, so those browsers never see it at all (Chromium's Gamepad API does, which is why cadgang keeps a Gamepad fallback for Chromium builds with WebHID switched off). Opening the 3D mouse settings tab in such a browser shows a dismissable notice saying so; there is no way to detect the device itself there.
+1. **3Dconnexion driver (3DxWare).** If the vendor driver is installed, cadgang talks to its local Navigation Library server (`3DxNLServer`, a WAMP WebSocket on the loopback alias `127.51.68.120`). The driver reads the scene from cadgang — camera, field of view, model extents, hit-tests — and writes the camera back while the cap is deflected, so speed, axis directions, Fit and the view buttons all come from 3Dconnexion's own settings. This is the only route that works while 3DxWare is running, because the driver opens the puck *exclusively* (IOKit reports `kIOReturnExclusiveAccess`). It works on macOS and Windows and in **any browser that trusts the driver's certificate**, which the 3DxWare installer adds to the system keychain — Safari and Firefox included.
+2. **Device directly (WebHID).** With no driver installed, the puck is read straight over [WebHID](https://developer.mozilla.org/en-US/docs/Web/API/WebHID_API) — no vendor software at all, same on macOS, Windows and Linux. WebHID exists only in Chrome, Edge, Opera and other Chromium browsers, on a secure origin (`localhost` or `https`). Speed, dead zone and per-axis invert are cadgang's own settings on this route.
+
+**Safari and Firefox without the driver cannot use a SpaceMouse.** They have no WebHID, and their Gamepad API only enumerates HID joysticks and gamepads — a 3Dconnexion puck is a *multi-axis controller*, so those browsers never see it at all (Chromium's Gamepad API does, which is why cadgang keeps a Gamepad fallback for Chromium builds with WebHID switched off). Opening the 3D mouse settings tab in that situation shows a dismissable notice; there is no way to detect the device itself there.
 
 Platform notes:
 
-- **macOS** — if 3DxWare is installed, its helper opens the device *exclusively* (IOKit reports `kIOReturnExclusiveAccess`), so Chrome's **Connect** fails with "Failed to open the device". Quit **3DconnexionHelper** from the 3Dconnexion menu-bar icon or Activity Monitor and connect again; to keep both permanently, uninstall 3DxWare — cadgang doesn't need it.
-- **Windows** — works out of the box, with or without 3DxWare.
-- **Linux** — the browser needs read access to the `hidraw` node. Add a udev rule and re-plug the device:
+- **macOS** — with 3DxWare installed, use the driver route (the default). To use WebHID instead, quit **3DconnexionHelper** from the 3Dconnexion menu-bar icon or Activity Monitor first, or uninstall 3DxWare; otherwise Chrome's **Connect** fails with "Failed to open the device".
+- **Windows** — either route works; the driver route is preferred when 3DxWare is present.
+- **Linux** — WebHID only (there is no 3DxWare). The browser needs read access to the `hidraw` node. Add a udev rule and re-plug the device:
   ```
   # /etc/udev/rules.d/70-spacemouse.rules
   KERNEL=="hidraw*", ATTRS{idVendor}=="256f", MODE="0666", TAG+="uaccess"
@@ -78,7 +81,7 @@ Platform notes:
   ```
   Stop `spacenavd` if it is running; it also opens the device.
 
-The driver lives in [`web/spacemouse.js`](web/spacemouse.js) and knows nothing about Three.js: it parses the 3Dconnexion HID reports (translation, rotation, buttons) into a normalized six-axis state that `app.js` integrates into the orbit camera every frame.
+[`web/navlib.js`](web/navlib.js) is the driver route: a ~150-line WAMP v1 client written from the community-documented protocol (no vendor code), exposing cadgang's scene as the properties the driver reads and writes. [`web/spacemouse.js`](web/spacemouse.js) is the direct route: it parses the 3Dconnexion HID reports (translation, rotation, buttons) into a normalized six-axis state that `app.js` integrates into the orbit camera every frame. Neither knows anything about Three.js.
 
 ## Claude Code integration (MCP)
 

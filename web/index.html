@@ -131,11 +131,20 @@
             </div>
           </section>
           <section class="settings-pane hidden" data-pane="mouse">
+            <div class="settings-field">
+              <label for="smTransport">Route</label>
+              <select id="smTransport">
+                <option value="auto">Auto — 3Dconnexion driver if installed, else the device directly</option>
+                <option value="driver">3Dconnexion driver (3DxWare)</option>
+                <option value="webhid">Device directly (WebHID)</option>
+              </select>
+            </div>
             <div class="sm-row">
-              <button id="smConnect" class="primary" title="Pair a 3Dconnexion device (WebHID)">Connect</button>
+              <button id="smConnect" class="primary" title="Connect the 3D mouse">Connect</button>
               <button id="smDisconnect" class="ghost" title="Release the device">Disconnect</button>
               <button id="smReset" class="ghost" title="Restore default speeds and axis directions">Defaults</button>
             </div>
+            <div id="smRaw">
             <div id="smAxes" class="sm-axes"></div>
             <div class="sm-grid">
               <label>pan <input id="smPan" type="range" min="0.2" max="3" step="0.1" /><span class="sm-num">1.0×</span></label>
@@ -150,6 +159,7 @@
               <label><input type="checkbox" data-axis="z" /> z</label>
               <label><input type="checkbox" data-axis="rx" /> rx</label>
               <label><input type="checkbox" data-axis="rz" /> rz</label>
+            </div>
             </div>
             <p id="smSupport" class="sm-help"></p>
           </section>
